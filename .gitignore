@@ -268,7 +268,10 @@ venv/
 .vs
 settings.json
 .vscode
-
+# Ignore everything in .vscode/ except bookmarks.json. Re-include the dir so the negation works.
+.vscode/*
+!.vscode/bookmarks.json
+!.vscode/
 # QtCreator files
 *.user
 
