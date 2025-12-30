@@ -36,6 +36,7 @@ ProfilingInfo::ProfilingInfo(const profiler_settings_t &n_settings, const idx_t 
 	ResetMetrics();
 }
 
+// Returns the default profiler settings, including parquet crypto/codec metrics.
 profiler_settings_t ProfilingInfo::DefaultSettings() {
 	return {MetricsType::QUERY_NAME,
 	        MetricsType::BLOCKED_THREAD_TIME,
@@ -54,7 +55,11 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::LATENCY,
 	        MetricsType::ROWS_RETURNED,
 	        MetricsType::TOTAL_BYTES_READ,
-	        MetricsType::TOTAL_BYTES_WRITTEN};
+	        MetricsType::TOTAL_BYTES_WRITTEN,
+	        MetricsType::PARQUET_DECOMPRESSION_TIME,
+	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
+	        MetricsType::PARQUET_DECRYPTION_TIME,
+	        MetricsType::PARQUET_DECRYPTION_COUNT};
 }
 
 profiler_settings_t ProfilingInfo::DefaultRootSettings() {
@@ -67,6 +72,7 @@ profiler_settings_t ProfilingInfo::DefaultOperatorSettings() {
 	        MetricsType::OPERATOR_NAME, MetricsType::OPERATOR_TYPE};
 }
 
+// Initializes enabled metrics with default values based on their expected types.
 void ProfilingInfo::ResetMetrics() {
 	metrics.clear();
 	for (auto &metric : expanded_settings) {
@@ -83,6 +89,8 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::PARQUET_DECOMPRESSION_TIME:
+		case MetricsType::PARQUET_DECRYPTION_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
 			break;
 		case MetricsType::OPERATOR_NAME:
@@ -101,6 +109,8 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE:
 		case MetricsType::TOTAL_BYTES_READ:
 		case MetricsType::TOTAL_BYTES_WRITTEN:
+		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
+		case MetricsType::PARQUET_DECRYPTION_COUNT:
 			metrics[metric] = Value::CreateValue<uint64_t>(0);
 			break;
 		case MetricsType::EXTRA_INFO:
@@ -169,6 +179,7 @@ string ProfilingInfo::GetMetricAsString(const MetricsType metric) const {
 	return metrics.at(metric).ToString();
 }
 
+// Serializes enabled metrics to JSON, including parquet timing and call counters.
 void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest) {
 	for (auto &metric : settings) {
 		auto metric_str = StringUtil::Lower(EnumUtil::ToString(metric));
@@ -212,7 +223,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::LATENCY:
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
-		case MetricsType::OPERATOR_TIMING: {
+		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::PARQUET_DECOMPRESSION_TIME:
+		case MetricsType::PARQUET_DECRYPTION_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());
 			break;
 		}
@@ -229,7 +242,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::SYSTEM_PEAK_BUFFER_MEMORY:
 		case MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE:
 		case MetricsType::TOTAL_BYTES_READ:
-		case MetricsType::TOTAL_BYTES_WRITTEN: {
+		case MetricsType::TOTAL_BYTES_WRITTEN:
+		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
+		case MetricsType::PARQUET_DECRYPTION_COUNT: {
 			yyjson_mut_obj_add_uint(doc, dest, key_ptr, metrics[metric].GetValue<uint64_t>());
 			break;
 		}

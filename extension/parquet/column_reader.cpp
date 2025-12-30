@@ -28,6 +28,8 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/types/bit.hpp"
 
+#include <chrono>
+
 namespace duckdb {
 
 using duckdb_parquet::CompressionCodec;
@@ -357,8 +359,10 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 	                   page_hdr.uncompressed_page_size);
 }
 
+// Decompresses a parquet page payload and records codec timing for profiling.
 void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_ptr_t src, idx_t src_size,
                                       data_ptr_t dst, idx_t dst_size) {
+	const auto start = std::chrono::steady_clock::now();
 	switch (codec) {
 	case CompressionCodec::UNCOMPRESSED:
 		throw InternalException("Parquet data unexpectedly uncompressed");
@@ -430,6 +434,10 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 		                            Reader().GetFileName(), codec_name.str());
 	}
 	}
+	// Record timing only after a successful decompression step.
+	const auto elapsed_ns =
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+	reader.AddParquetDecompressionMetrics(NumericCast<uint64_t>(elapsed_ns));
 }
 
 void ColumnReader::PrepareDataPage(PageHeader &page_hdr) {

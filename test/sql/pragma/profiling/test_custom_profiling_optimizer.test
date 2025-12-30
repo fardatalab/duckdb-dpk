@@ -180,6 +180,10 @@ SELECT unnest(res) FROM (
 "OPERATOR_ROWS_SCANNED": "true"
 "OPERATOR_TIMING": "true"
 "OPERATOR_TYPE": "true"
+"PARQUET_DECOMPRESSION_COUNT": "true"
+"PARQUET_DECOMPRESSION_TIME": "true"
+"PARQUET_DECRYPTION_COUNT": "true"
+"PARQUET_DECRYPTION_TIME": "true"
 "QUERY_NAME": "true"
 "RESULT_SET_SIZE": "true"
 "ROWS_RETURNED": "true"
@@ -193,4 +197,3 @@ CREATE OR REPLACE TABLE metrics_output AS SELECT * FROM '__TEST_DIR__/profiling_
 
 statement ok
 SELECT cpu_time, extra_info, rows_returned, latency FROM metrics_output;
-

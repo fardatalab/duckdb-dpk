@@ -43,11 +43,13 @@ public:
 	ProfilingInfo &operator=(ProfilingInfo const &) = default;
 
 public:
+	//! Returns the default profiler settings, including parquet crypto/codec metrics.
 	static profiler_settings_t DefaultSettings();
 	static profiler_settings_t DefaultRootSettings();
 	static profiler_settings_t DefaultOperatorSettings();
 
 public:
+	//! Reset enabled metrics to their default zero values.
 	void ResetMetrics();
 	//! Returns true, if the query profiler must collect this metric.
 	static bool Enabled(const profiler_settings_t &settings, const MetricsType metric);
@@ -56,6 +58,7 @@ public:
 
 public:
 	string GetMetricAsString(const MetricsType metric) const;
+	//! Serialize enabled metrics to JSON, including parquet timing and call counters.
 	void WriteMetricsToJSON(duckdb_yyjson::yyjson_mut_doc *doc, duckdb_yyjson::yyjson_mut_val *destination);
 
 public:

@@ -30,6 +30,7 @@
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "duckdb/logging/log_manager.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -88,6 +89,7 @@ static void ParseParquetFooter(data_ptr_t buffer, const string &file_path, idx_t
 	}
 }
 
+// Loads parquet metadata and accounts for encrypted footer decryption timing.
 static shared_ptr<ParquetFileMetadataCache>
 LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &file_handle,
              const shared_ptr<const ParquetEncryptionConfig> &encryption_config, const EncryptionUtil &encryption_util,
@@ -163,7 +165,12 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 			throw InvalidInputException("File '%s' is encrypted with AES_GCM_CTR_V1, but only AES_GCM_V1 is supported",
 			                            file_handle.GetPath());
 		}
+		const auto start = std::chrono::steady_clock::now();
 		ParquetCrypto::Read(*metadata, *file_proto, encryption_config->GetFooterKey(), encryption_util);
+		const auto elapsed_ns =
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		// Record encrypted footer read as part of parquet decryption time.
+		QueryProfiler::Get(context).AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
 	} else {
 		metadata->read(file_proto.get());
 	}
@@ -833,9 +840,10 @@ ParquetColumnDefinition ParquetColumnDefinition::FromSchemaValue(ClientContext &
 	return result;
 }
 
+// Constructs a parquet reader that can report query-level profiling metrics.
 ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, ParquetOptions parquet_options_p,
                              shared_ptr<ParquetFileMetadataCache> metadata_p)
-    : BaseFileReader(std::move(file_p)), fs(CachingFileSystem::Get(context_p)),
+    : BaseFileReader(std::move(file_p)), context(context_p), fs(CachingFileSystem::Get(context_p)),
       allocator(BufferAllocator::Get(context_p)), parquet_options(std::move(parquet_options_p)) {
 	file_handle = fs.OpenFile(QueryContext(context_p), file, FileFlags::FILE_FLAGS_READ);
 	if (!file_handle->CanSeek()) {
@@ -907,10 +915,12 @@ unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &contex
 	return ParquetReader::ReadStatistics(*this, name);
 }
 
+// Constructs a parquet reader used for statistics with access to profiling metrics.
 ParquetReader::ParquetReader(ClientContext &context_p, ParquetOptions parquet_options_p,
                              shared_ptr<ParquetFileMetadataCache> metadata_p)
-    : BaseFileReader(string()), fs(CachingFileSystem::Get(context_p)), allocator(BufferAllocator::Get(context_p)),
-      metadata(std::move(metadata_p)), parquet_options(std::move(parquet_options_p)), rows_read(0) {
+    : BaseFileReader(string()), context(context_p), fs(CachingFileSystem::Get(context_p)),
+      allocator(BufferAllocator::Get(context_p)), metadata(std::move(metadata_p)),
+      parquet_options(std::move(parquet_options_p)), rows_read(0) {
 	InitializeSchema(context_p);
 }
 
@@ -983,22 +993,43 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const ParquetUnionData 
 	                              file_col_idx);
 }
 
+// Reads a thrift object and records decryption timing if encryption is enabled.
 uint32_t ParquetReader::Read(duckdb_apache::thrift::TBase &object, TProtocol &iprot) {
 	if (parquet_options.encryption_config) {
-		return ParquetCrypto::Read(object, iprot, parquet_options.encryption_config->GetFooterKey(), *encryption_util);
-	} else {
-		return object.read(&iprot);
+		const auto start = std::chrono::steady_clock::now();
+		const auto result =
+		    ParquetCrypto::Read(object, iprot, parquet_options.encryption_config->GetFooterKey(), *encryption_util);
+		const auto elapsed_ns =
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		return result;
 	}
+	return object.read(&iprot);
 }
 
+// Reads a data buffer and records decryption timing if encryption is enabled.
 uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
                                  const uint32_t buffer_size) {
 	if (parquet_options.encryption_config) {
-		return ParquetCrypto::ReadData(iprot, buffer, buffer_size, parquet_options.encryption_config->GetFooterKey(),
-		                               *encryption_util);
-	} else {
-		return iprot.getTransport()->read(buffer, buffer_size);
+		const auto start = std::chrono::steady_clock::now();
+		const auto result = ParquetCrypto::ReadData(iprot, buffer, buffer_size,
+		                                            parquet_options.encryption_config->GetFooterKey(), *encryption_util);
+		const auto elapsed_ns =
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		return result;
 	}
+	return iprot.getTransport()->read(buffer, buffer_size);
+}
+
+// Adds parquet decryption timing and call count to the query profiler.
+void ParquetReader::AddParquetDecryptionMetrics(uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddParquetDecryptionMetrics(elapsed_ns);
+}
+
+// Adds parquet decompression timing and call count to the query profiler.
+void ParquetReader::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddParquetDecompressionMetrics(elapsed_ns);
 }
 
 static idx_t GetRowGroupOffset(ParquetReader &reader, idx_t group_idx) {

@@ -96,6 +96,7 @@ void QueryProfiler::Start(const string &query) {
 	query_metrics.latency.Start();
 }
 
+// Resets query-level profiler state and counters for a fresh query.
 void QueryProfiler::Reset() {
 	tree_map.clear();
 	root = nullptr;
@@ -105,6 +106,10 @@ void QueryProfiler::Reset() {
 	query_metrics.query = "";
 	query_metrics.total_bytes_read = 0;
 	query_metrics.total_bytes_written = 0;
+	query_metrics.parquet_decrypt_time_ns = 0;
+	query_metrics.parquet_decrypt_call_count = 0;
+	query_metrics.parquet_decompress_time_ns = 0;
+	query_metrics.parquet_decompress_call_count = 0;
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -226,6 +231,7 @@ Value GetCumulativeOptimizers(ProfilingNode &node) {
 	return Value::CreateValue(count);
 }
 
+// Finalizes query metrics and emits profiling output if enabled.
 void QueryProfiler::EndQuery() {
 	unique_lock<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -263,6 +269,23 @@ void QueryProfiler::EndQuery() {
 			}
 			if (info.Enabled(settings, MetricsType::TOTAL_BYTES_WRITTEN)) {
 				info.metrics[MetricsType::TOTAL_BYTES_WRITTEN] = Value::UBIGINT(query_metrics.total_bytes_written);
+			}
+			// Added parquet crypto/codec metrics to the query-global output.
+			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_TIME)) {
+				info.metrics[MetricsType::PARQUET_DECRYPTION_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.parquet_decrypt_time_ns) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_COUNT)) {
+				info.metrics[MetricsType::PARQUET_DECRYPTION_COUNT] =
+				    Value::UBIGINT(query_metrics.parquet_decrypt_call_count);
+			}
+			if (info.Enabled(settings, MetricsType::PARQUET_DECOMPRESSION_TIME)) {
+				info.metrics[MetricsType::PARQUET_DECOMPRESSION_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.parquet_decompress_time_ns) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::PARQUET_DECOMPRESSION_COUNT)) {
+				info.metrics[MetricsType::PARQUET_DECOMPRESSION_COUNT] =
+				    Value::UBIGINT(query_metrics.parquet_decompress_call_count);
 			}
 			if (info.Enabled(settings, MetricsType::ROWS_RETURNED)) {
 				info.metrics[MetricsType::ROWS_RETURNED] = child_info.metrics[MetricsType::OPERATOR_CARDINALITY];
@@ -319,6 +342,22 @@ void QueryProfiler::AddBytesRead(const idx_t nr_bytes) {
 void QueryProfiler::AddBytesWritten(const idx_t nr_bytes) {
 	if (IsEnabled()) {
 		query_metrics.total_bytes_written += nr_bytes;
+	}
+}
+
+// Records the time spent decrypting parquet data for this query.
+void QueryProfiler::AddParquetDecryptionMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.parquet_decrypt_time_ns += elapsed_ns;
+		query_metrics.parquet_decrypt_call_count++;
+	}
+}
+
+// Records the time spent decompressing parquet data for this query.
+void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.parquet_decompress_time_ns += elapsed_ns;
+		query_metrics.parquet_decompress_call_count++;
 	}
 }
 

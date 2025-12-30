@@ -143,10 +143,13 @@ struct ParquetUnionData : public BaseUnionData {
 
 class ParquetReader : public BaseFileReader {
 public:
+	//! Construct a parquet reader for a file and keep the context for profiling metrics.
 	ParquetReader(ClientContext &context, OpenFileInfo file, ParquetOptions parquet_options,
 	              shared_ptr<ParquetFileMetadataCache> metadata = nullptr);
 	~ParquetReader() override;
 
+	//! Provides access to the client context for query-level profiling.
+	ClientContext &context;
 	CachingFileSystem fs;
 	Allocator &allocator;
 	shared_ptr<ParquetFileMetadataCache> metadata;
@@ -180,9 +183,16 @@ public:
 
 	const duckdb_parquet::FileMetaData *GetFileMetadata() const;
 
+	//! Read a thrift object, decrypting if needed and recording timing.
 	uint32_t Read(duckdb_apache::thrift::TBase &object, TProtocol &iprot);
+	//! Read a data buffer, decrypting if needed and recording timing.
 	uint32_t ReadData(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
 	                  const uint32_t buffer_size);
+
+	//! Accumulate parquet decryption timing and call count for this query.
+	void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
+	//! Accumulate parquet decompression timing and call count for this query.
+	void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
 
 	unique_ptr<BaseStatistics> ReadStatistics(const string &name);
 

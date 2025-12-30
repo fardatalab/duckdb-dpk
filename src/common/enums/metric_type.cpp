@@ -240,6 +240,10 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::BLOCKED_THREAD_TIME:
         case MetricsType::SYSTEM_PEAK_BUFFER_MEMORY:
         case MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE:
+        case MetricsType::PARQUET_DECOMPRESSION_TIME:
+        case MetricsType::PARQUET_DECOMPRESSION_COUNT:
+        case MetricsType::PARQUET_DECRYPTION_TIME:
+        case MetricsType::PARQUET_DECRYPTION_COUNT:
             return true;
         default:
             return false;
