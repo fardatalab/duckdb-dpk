@@ -24,6 +24,16 @@
 					"label": "TemplatedLikeOperator"
 				}
 			]
+		},
+		{
+			"path": "extension/parquet/parquet_reader.cpp",
+			"bookmarks": [
+				{
+					"line": 996,
+					"column": 0,
+					"label": "ParquetReader::ReadData->ParquetCrypto::ReadData"
+				}
+			]
 		}
 	]
 }
