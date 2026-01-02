@@ -361,3 +361,8 @@ extension_external
 
 test/sql/pragma/output.json
 tools/pythonpkg/duckdb_build/
+
+# jason:
+tpch_parquet_encrypted/*.parquet
+tpch_profiles/*.json
+tpch_profiles/*.csv
