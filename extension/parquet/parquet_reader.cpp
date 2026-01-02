@@ -993,7 +993,7 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const ParquetUnionData 
 	                              file_col_idx);
 }
 
-// Reads a thrift object and records decryption timing if encryption is enabled.
+// Reads a thrift object (such as page header) and records decryption timing if encryption is enabled.
 uint32_t ParquetReader::Read(duckdb_apache::thrift::TBase &object, TProtocol &iprot) {
 	if (parquet_options.encryption_config) {
 		const auto start = std::chrono::steady_clock::now();

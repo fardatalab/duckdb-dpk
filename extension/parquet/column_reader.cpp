@@ -38,6 +38,24 @@ using duckdb_parquet::Encoding;
 using duckdb_parquet::PageType;
 using duckdb_parquet::Type;
 
+/**
+ * Placeholder for a DPK-integrated "read + decrypt + gzip decompress" path.
+ * The current pipeline reads encrypted+compressed bytes, decrypts them in ReadData, then decompresses.
+ * This hook should preserve that order while collapsing it into a single call.
+ * DPK should also mirror decryption/decompression metrics that are currently recorded elsewhere.
+ * TODO: replace this stub with the real DPK implementation.
+ */
+static void dpk_read_decomp_decrypt(ParquetReader &reader, duckdb_apache::thrift::protocol::TProtocol &protocol,
+                                    data_ptr_t dst, idx_t dst_size, idx_t src_size) {
+	// Placeholder only: keep the call site visible while DPK wiring is implemented.
+	(void)reader;
+	(void)protocol;
+	(void)dst;
+	(void)dst_size;
+	(void)src_size;
+	throw NotImplementedException("dpk_read_decomp_decrypt placeholder - wire in DPK implementation");
+}
+
 const uint64_t ParquetDecodeUtils::BITPACK_MASKS[] = {0,
                                                       1,
                                                       3,
@@ -291,6 +309,7 @@ void ColumnReader::PrepareRead(optional_ptr<const TableFilter> filter, optional_
 void ColumnReader::ResetPage() {
 }
 
+// Prepares a DATA_PAGE_V2 buffer, with an optional DPK gzip decrypt/decompress fast-path.
 void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	D_ASSERT(page_hdr.type == PageType::DATA_PAGE_V2);
 
@@ -323,13 +342,30 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 
 	auto compressed_bytes = page_hdr.compressed_page_size - uncompressed_bytes;
 
+	// jason: placeholder for DPK-integrated read + decrypt + gzip decompress path
+	/*
 	if (compressed_bytes > 0) {
-		ResizeableBuffer compressed_buffer;
-		compressed_buffer.resize(GetAllocator(), compressed_bytes);
-		reader.ReadData(*protocol, compressed_buffer.ptr, compressed_bytes);
+	    ResizeableBuffer compressed_buffer;
+	    compressed_buffer.resize(GetAllocator(), compressed_bytes);
+	    reader.ReadData(*protocol, compressed_buffer.ptr, compressed_bytes);
 
-		DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
-		                   block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
+	    DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
+	                       block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
+	}
+	*/
+	if (compressed_bytes > 0) {
+		if (chunk->meta_data.codec == CompressionCodec::GZIP) {
+			// DPK placeholder: replaces the ReadData + GZIP DecompressInternal path above.
+			dpk_read_decomp_decrypt(reader, *protocol, block->ptr + uncompressed_bytes,
+			                        page_hdr.uncompressed_page_size - uncompressed_bytes, compressed_bytes);
+		} else {
+			ResizeableBuffer compressed_buffer;
+			compressed_buffer.resize(GetAllocator(), compressed_bytes);
+			reader.ReadData(*protocol, compressed_buffer.ptr, compressed_bytes);
+
+			DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
+			                   block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
+		}
 	}
 }
 
@@ -341,6 +377,7 @@ void ColumnReader::AllocateBlock(idx_t size) {
 	}
 }
 
+// Prepares a DATA_PAGE buffer, with an optional DPK gzip decrypt/decompress fast-path.
 void ColumnReader::PreparePage(PageHeader &page_hdr) {
 	AllocateBlock(page_hdr.uncompressed_page_size + 1);
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
@@ -351,12 +388,27 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 		return;
 	}
 
+	// jason: placeholder for DPK-integrated read + decrypt + gzip decompress path
+	/*
 	ResizeableBuffer compressed_buffer;
 	compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
 	reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
 
 	DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
 	                   page_hdr.uncompressed_page_size);
+	*/
+	if (chunk->meta_data.codec == CompressionCodec::GZIP) {
+		// DPK placeholder: replaces the ReadData + GZIP DecompressInternal path above.
+		dpk_read_decomp_decrypt(reader, *protocol, block->ptr, page_hdr.uncompressed_page_size,
+		                        page_hdr.compressed_page_size);
+	} else {
+		ResizeableBuffer compressed_buffer;
+		compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
+		reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
+
+		DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
+		                   page_hdr.uncompressed_page_size);
+	}
 }
 
 // Decompresses a parquet page payload and records codec timing for profiling.
