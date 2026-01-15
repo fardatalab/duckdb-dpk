@@ -5,6 +5,7 @@
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
+#include "duckdb/common/dds_posix_debug.hpp"
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -229,6 +230,10 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, const string &qu
 	DUCKDB_LOG(*this, QueryLogType, query);
 }
 
+/**
+ * Finalizes query execution, commits or rolls back transactions, and runs end-of-query hooks.
+ * Includes DDS POSIX debug stats emission at query end when enabled.
+ */
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
 	if (active_query->executor) {
@@ -264,6 +269,8 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	} // LCOV_EXCL_STOP
 
 	client_data->profiler->EndQuery();
+	// DDS debug: print and reset DDS pread alignment stats at query end.
+	DDSPosixDebugPrintAndReset();
 
 	// Refresh the logger
 	logger->Flush();

@@ -1,6 +1,7 @@
 #include "duckdb/common/local_file_system.hpp"
 
 #include "duckdb/common/checksum.hpp"
+#include "duckdb/common/dds_posix_debug.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
@@ -11,6 +12,10 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/log_manager.hpp"
+
+#ifdef DUCKDB_USE_DDS_POSIX
+#include "DDSPosix.h"
+#endif
 
 #include <cstdint>
 #include <cstdio>
@@ -61,12 +66,76 @@ extern "C" WINBASEAPI BOOL QueryFullProcessImageNameW(HANDLE, DWORD, LPWSTR, PDW
 #endif
 
 namespace duckdb {
+
+/**
+ * Returns true when DDS POSIX should be used for this path.
+ * Currently we only route Parquet files through DDS to limit blast radius.
+ */
+static bool UseDDSPosixForPath(const string &path) {
+#ifdef DUCKDB_USE_DDS_POSIX
+	// Original implementation (kept for reference) used a non-static member function.
+	// auto extension = StringUtil::Lower(FileSystem::ExtractExtension(path));
+	// Updated to avoid needing a FileSystem instance; extract extension directly.
+	auto last_sep = path.find_last_of("/\\");
+	auto last_dot = path.find_last_of('.');
+	if (last_dot == string::npos || (last_sep != string::npos && last_dot < last_sep)) {
+		return false;
+	}
+	auto extension = StringUtil::Lower(path.substr(last_dot + 1));
+	return extension == "parquet";
+#else
+	(void)path;
+	return false;
+#endif
+}
+
+/**
+ * Normalizes a DuckDB path into a DDS flat filename.
+ * DDS uses a flat namespace, so we strip directories only.
+ * Note: URL prefix stripping was removed to keep basename-only DDS mapping consistent.
+ */
+static string NormalizeDDSPath(const string &path) {
+	// Original implementation (kept for reference) used a non-static member function.
+	// return FileSystem::ExtractName(path);
+	// Updated to avoid needing a FileSystem instance; extract the basename directly.
+	auto last_sep = path.find_last_of("/\\");
+	if (last_sep == string::npos) {
+		return path;
+	}
+	return path.substr(last_sep + 1);
+}
+
 #ifndef _WIN32
+/**
+ * Checks for file existence, using DDS stat for Parquet paths when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 bool LocalFileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	if (!filename.empty()) {
+		if (UseDDSPosixForPath(filename)) {
+#ifdef DUCKDB_USE_DDS_POSIX
+			auto dds_path = NormalizeDDSPath(filename);
+			struct stat status;
+			// DDS debug: log the DDS FileExists swap point.
+			printf("[DDS-IO] FileExists DDS path=\"%s\" dds=\"%s\"\n", filename.c_str(), dds_path.c_str());
+			// DDS does not expose access(2); treat a successful dds_stat as existence.
+			// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(dds_path.c_str(), &status);
+			if (DDSPosix::dds_stat(dds_path.c_str(), &status) == 0) {
+				return true;
+			}
+			return false;
+#endif
+		}
+		// POSIX path: preserve original access/stat based existence checks.
 		auto normalized_file = NormalizeLocalPath(filename);
+		// DDS debug: log the POSIX FileExists swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] FileExists POSIX path=\"%s\"\n", normalized_file);
+#endif
+		// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(normalized_file, &status);
 		if (access(normalized_file, 0) == 0) {
 			struct stat status;
+			// DDS swap candidate: if (dds_rc == 0) { ... } (DDS does not expose access(), so use dds_stat or open)
 			stat(normalized_file, &status);
 			if (S_ISREG(status.st_mode)) {
 				return true;
@@ -77,11 +146,29 @@ bool LocalFileSystem::FileExists(const string &filename, optional_ptr<FileOpener
 	return false;
 }
 
+/**
+ * Checks whether a path is a pipe; DDS files are never pipes.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 bool LocalFileSystem::IsPipe(const string &filename, optional_ptr<FileOpener> opener) {
 	if (!filename.empty()) {
+		if (UseDDSPosixForPath(filename)) {
+			// DDS debug: log the DDS IsPipe swap point (DDS never uses pipes).
+#ifdef DUCKDB_USE_DDS_POSIX
+			printf("[DDS-IO] IsPipe DDS path=\"%s\" (forced false)\n", filename.c_str());
+#endif
+			// DDS swap candidate: return false (DDS uses flat files, never pipes).
+			return false;
+		}
 		auto normalized_file = NormalizeLocalPath(filename);
+		// DDS debug: log the POSIX IsPipe swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] IsPipe POSIX path=\"%s\"\n", normalized_file);
+#endif
+		// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(normalized_file, &status);
 		if (access(normalized_file, 0) == 0) {
 			struct stat status;
+			// DDS swap candidate: if (dds_rc == 0) { ... } (DDS does not expose access(), so use dds_stat or open)
 			stat(normalized_file, &status);
 			if (S_ISFIFO(status.st_mode)) {
 				return true;
@@ -158,9 +245,29 @@ public:
 	idx_t current_pos = 0;
 
 public:
+	/**
+	 * Closes the file handle, routing Parquet paths through DDS when enabled.
+	 * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+	 */
 	void Close() override {
 		if (fd != -1) {
-			close(fd);
+#ifdef DUCKDB_USE_DDS_POSIX
+			if (UseDDSPosixForPath(path)) {
+				const auto dds_path = NormalizeDDSPath(path);
+				// DDS debug: log the DDS close swap point.
+				printf("[DDS-IO] close DDS path=\"%s\" dds=\"%s\"\n", path.c_str(), dds_path.c_str());
+				// DDS swap candidate: DDSPosix::close(fd);
+				DDSPosix::close(fd);
+			} else
+#endif
+			{
+				// DDS debug: log the POSIX close swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+				printf("[DDS-IO] close POSIX path=\"%s\"\n", path.c_str());
+#endif
+				// DDS swap candidate: DDSPosix::close(fd);
+				close(fd);
+			}
 			fd = -1;
 			DUCKDB_LOG_FILE_SYSTEM_CLOSE((*this));
 		}
@@ -169,6 +276,7 @@ public:
 
 static FileType GetFileTypeInternal(int fd) { // LCOV_EXCL_START
 	struct stat s;
+	// DDS swap candidate: DDSPosix::dds_stat(path, &s) (DDS has path-based stat only)
 	if (fstat(fd, &s) == -1) {
 		return FileType::FILE_TYPE_INVALID;
 	}
@@ -299,10 +407,20 @@ bool LocalFileSystem::IsPrivateFile(const string &path_p, FileOpener *opener) {
 	return true;
 }
 
+/**
+ * Opens a file, routing Parquet paths through DDS POSIX when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenFlags flags,
                                                  optional_ptr<FileOpener> opener) {
 	auto path = FileSystem::ExpandPath(path_p, opener);
 	auto normalized_path = NormalizeLocalPath(path);
+	auto use_dds = UseDDSPosixForPath(path);
+	string dds_path;
+	if (use_dds) {
+		// DDS uses a flat namespace; strip directories before opening.
+		dds_path = NormalizeDDSPath(path);
+	}
 	if (flags.Compression() != FileCompressionType::UNCOMPRESSED) {
 		throw NotImplementedException("Unsupported compression type for default file system");
 	}
@@ -360,7 +478,23 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	}
 
 	// Open the file
-	int fd = open(normalized_path, open_flags, filesec);
+	int fd = -1;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (use_dds) {
+		// DDS debug: log the DDS open swap point.
+		printf("[DDS-IO] open DDS path=\"%s\" dds=\"%s\" flags=0x%x\n", path.c_str(), dds_path.c_str(), open_flags);
+		// DDS swap candidate: int fd = DDSPosix::open(normalized_path, open_flags, filesec);
+		fd = DDSPosix::open(dds_path.c_str(), open_flags, filesec);
+	} else
+#endif
+	{
+		// DDS debug: log the POSIX open swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] open POSIX path=\"%s\" flags=0x%x\n", normalized_path, open_flags);
+#endif
+		// DDS swap candidate: int fd = DDSPosix::open(normalized_path, open_flags, filesec);
+		fd = open(normalized_path, open_flags, filesec);
+	}
 
 	if (fd == -1) {
 		if (flags.ReturnNullIfNotExists() && errno == ENOENT) {
@@ -382,7 +516,7 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	}
 #endif
 
-	if (flags.Lock() != FileLockType::NO_LOCK) {
+	if (!use_dds && flags.Lock() != FileLockType::NO_LOCK) {
 		// set lock on file
 		// but only if it is not an input/output stream
 		auto file_type = GetFileTypeInternal(fd);
@@ -450,18 +584,60 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	return std::move(file_handle);
 }
 
+/**
+ * Updates the file pointer, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
-	off_t offset = lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
+	off_t offset;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		// DDS debug: log the DDS lseek swap point.
+		printf("[DDS-IO] lseek(SET) DDS path=\"%s\" offset=%llu\n", handle.path.c_str(),
+		       static_cast<unsigned long long>(location));
+		// DDS swap candidate: off_t offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
+		offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
+	} else
+#endif
+	{
+		// DDS debug: log the POSIX lseek swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] lseek(SET) POSIX path=\"%s\" offset=%llu\n", handle.path.c_str(),
+		       static_cast<unsigned long long>(location));
+#endif
+		// DDS swap candidate: off_t offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
+		offset = lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
+	}
 	if (offset == (off_t)-1) {
 		throw IOException("Could not seek to location %lld for file \"%s\": %s", {{"errno", std::to_string(errno)}},
 		                  location, handle.path, strerror(errno));
 	}
 }
 
+/**
+ * Returns the current file pointer, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
-	off_t position = lseek(fd, 0, SEEK_CUR);
+	off_t position;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		// DDS debug: log the DDS lseek swap point.
+		printf("[DDS-IO] lseek(CUR) DDS path=\"%s\"\n", handle.path.c_str());
+		// DDS swap candidate: off_t position = DDSPosix::lseek(fd, 0, SEEK_CUR);
+		position = DDSPosix::lseek(fd, 0, SEEK_CUR);
+	} else
+#endif
+	{
+		// DDS debug: log the POSIX lseek swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] lseek(CUR) POSIX path=\"%s\"\n", handle.path.c_str());
+#endif
+		// DDS swap candidate: off_t position = DDSPosix::lseek(fd, 0, SEEK_CUR);
+		position = lseek(fd, 0, SEEK_CUR);
+	}
 	if (position == (off_t)-1) {
 		throw IOException("Could not get file position file \"%s\": %s", {{"errno", std::to_string(errno)}},
 		                  handle.path, strerror(errno));
@@ -469,13 +645,40 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 	return UnsafeNumericCast<idx_t>(position);
 }
 
+/**
+ * Reads from a fixed offset, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints and DDS pread alignment statistics at the swap points.
+ */
 void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	auto bytes_to_read = nr_bytes;
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto read_buffer = char_ptr_cast(buffer);
 	while (nr_bytes > 0) {
-		int64_t bytes_read =
-		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		int64_t bytes_read;
+#ifdef DUCKDB_USE_DDS_POSIX
+		if (UseDDSPosixForPath(handle.path)) {
+			// DDS debug: log the DDS pread swap point and record alignment stats.
+			printf("[DDS-IO] pread DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
+			DDSPosixDebugRecordPread(UnsafeNumericCast<uint64_t>(nr_bytes), UnsafeNumericCast<uint64_t>(location));
+			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
+			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
+			//                                                          UnsafeNumericCast<off_t>(location));
+			bytes_read = DDSPosix::pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes),
+			                             UnsafeNumericCast<off_t>(location));
+		} else
+#endif
+		{
+			// DDS debug: log the POSIX pread swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+			printf("[DDS-IO] pread POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
+#endif
+			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
+			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
+			//                                                          UnsafeNumericCast<off_t>(location));
+			bytes_read = pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		}
 		if (bytes_read == -1) {
 			throw IOException("Could not read from file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 			                  strerror(errno));
@@ -493,10 +696,30 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 	DUCKDB_LOG_FILE_SYSTEM_READ(handle, bytes_to_read, location - UnsafeNumericCast<idx_t>(bytes_to_read));
 }
 
+/**
+ * Reads from the current file position, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
 	auto &unix_handle = handle.Cast<UnixFileHandle>();
 	int fd = unix_handle.fd;
-	int64_t bytes_read = read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
+	int64_t bytes_read;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		// DDS debug: log the DDS read swap point.
+		printf("[DDS-IO] read DDS path=\"%s\" size=%lld\n", handle.path.c_str(), static_cast<long long>(nr_bytes));
+		// DDS swap candidate: int64_t bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
+		bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
+	} else
+#endif
+	{
+		// DDS debug: log the POSIX read swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+		printf("[DDS-IO] read POSIX path=\"%s\" size=%lld\n", handle.path.c_str(), static_cast<long long>(nr_bytes));
+#endif
+		// DDS swap candidate: int64_t bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
+		bytes_read = read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
+	}
 	if (bytes_read == -1) {
 		throw IOException("Could not read from file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 		                  strerror(errno));
@@ -508,6 +731,10 @@ int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes
 	return bytes_read;
 }
 
+/**
+ * Writes at a fixed offset, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto write_buffer = char_ptr_cast(buffer);
@@ -516,8 +743,31 @@ void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, 
 	auto current_location = location;
 
 	while (bytes_to_write > 0) {
-		int64_t bytes_written = pwrite(fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
-		                               UnsafeNumericCast<off_t>(current_location));
+		int64_t bytes_written;
+#ifdef DUCKDB_USE_DDS_POSIX
+		if (UseDDSPosixForPath(handle.path)) {
+			// DDS debug: log the DDS pwrite swap point.
+			printf("[DDS-IO] pwrite DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			       static_cast<long long>(bytes_to_write), static_cast<unsigned long long>(current_location));
+			// DDS swap candidate: int64_t bytes_written = DDSPosix::pwrite(
+			//     fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
+			//     UnsafeNumericCast<off_t>(current_location));
+			bytes_written = DDSPosix::pwrite(fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
+			                                 UnsafeNumericCast<off_t>(current_location));
+		} else
+#endif
+		{
+			// DDS debug: log the POSIX pwrite swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+			printf("[DDS-IO] pwrite POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			       static_cast<long long>(bytes_to_write), static_cast<unsigned long long>(current_location));
+#endif
+			// DDS swap candidate: int64_t bytes_written = DDSPosix::pwrite(
+			//     fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
+			//     UnsafeNumericCast<off_t>(current_location));
+			bytes_written = pwrite(fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
+			                       UnsafeNumericCast<off_t>(current_location));
+		}
 		if (bytes_written < 0) {
 			throw IOException("Could not write file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 			                  strerror(errno));
@@ -534,6 +784,10 @@ void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, 
 	DUCKDB_LOG_FILE_SYSTEM_WRITE(handle, nr_bytes, location);
 }
 
+/**
+ * Writes from the current file position, routing Parquet paths through DDS when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
 	auto &unix_handle = handle.Cast<UnixFileHandle>();
 	int fd = unix_handle.fd;
@@ -542,7 +796,25 @@ int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_byte
 	while (bytes_to_write > 0) {
 		auto bytes_to_write_this_call =
 		    MinValue<idx_t>(idx_t(NumericLimits<int32_t>::Maximum()), idx_t(bytes_to_write));
-		int64_t current_bytes_written = write(fd, buffer, bytes_to_write_this_call);
+		int64_t current_bytes_written;
+#ifdef DUCKDB_USE_DDS_POSIX
+		if (UseDDSPosixForPath(handle.path)) {
+			// DDS debug: log the DDS write swap point.
+			printf("[DDS-IO] write DDS path=\"%s\" size=%lld\n", handle.path.c_str(),
+			       static_cast<long long>(bytes_to_write_this_call));
+			// DDS swap candidate: int64_t current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
+			current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
+		} else
+#endif
+		{
+			// DDS debug: log the POSIX write swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+			printf("[DDS-IO] write POSIX path=\"%s\" size=%lld\n", handle.path.c_str(),
+			       static_cast<long long>(bytes_to_write_this_call));
+#endif
+			// DDS swap candidate: int64_t current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
+			current_bytes_written = write(fd, buffer, bytes_to_write_this_call);
+		}
 		if (current_bytes_written <= 0) {
 			throw IOException("Could not write file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 			                  strerror(errno));
@@ -573,9 +845,31 @@ bool LocalFileSystem::Trim(FileHandle &handle, idx_t offset_bytes, idx_t length_
 #endif
 }
 
+/**
+ * Returns file size, routing Parquet paths through DDS stat when enabled.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	struct stat s;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		auto dds_path = NormalizeDDSPath(handle.path);
+		// DDS debug: log the DDS stat swap point.
+		printf("[DDS-IO] fstat DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(), dds_path.c_str());
+		// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
+		if (DDSPosix::dds_stat(dds_path.c_str(), &s) == -1) {
+			throw IOException("Failed to get file size for DDS file \"%s\": %s", {{"errno", std::to_string(errno)}},
+			                  handle.path, strerror(errno));
+		}
+		return s.st_size;
+	}
+#endif
+	// DDS debug: log the POSIX fstat swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+	printf("[DDS-IO] fstat POSIX path=\"%s\"\n", handle.path.c_str());
+#endif
+	// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 	if (fstat(fd, &s) == -1) {
 		throw IOException("Failed to get file size for file \"%s\": %s", {{"errno", std::to_string(errno)}},
 		                  handle.path, strerror(errno));
@@ -583,9 +877,32 @@ int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 	return s.st_size;
 }
 
+/**
+ * Returns last modified time, routing Parquet paths through DDS stat when enabled.
+ * DDS currently does not populate mtime, so this may default to epoch.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 timestamp_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	struct stat s;
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		auto dds_path = NormalizeDDSPath(handle.path);
+		// DDS debug: log the DDS stat swap point.
+		printf("[DDS-IO] fstat(mtime) DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(), dds_path.c_str());
+		// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
+		if (DDSPosix::dds_stat(dds_path.c_str(), &s) == -1) {
+			throw IOException("Failed to get last modified time for DDS file \"%s\": %s", {{"errno", std::to_string(errno)}},
+			                  handle.path, strerror(errno));
+		}
+		return Timestamp::FromEpochSeconds(s.st_mtime);
+	}
+#endif
+	// DDS debug: log the POSIX fstat swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+	printf("[DDS-IO] fstat(mtime) POSIX path=\"%s\"\n", handle.path.c_str());
+#endif
+	// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 	if (fstat(fd, &s) == -1) {
 		throw IOException("Failed to get last modified time for file \"%s\": %s", {{"errno", std::to_string(errno)}},
 		                  handle.path, strerror(errno));
@@ -593,7 +910,23 @@ timestamp_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	return Timestamp::FromEpochSeconds(s.st_mtime);
 }
 
+/**
+ * Returns file type, defaulting to regular files for DDS Parquet paths.
+ * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.
+ */
 FileType LocalFileSystem::GetFileType(FileHandle &handle) {
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(handle.path)) {
+		// DDS debug: log the DDS GetFileType swap point.
+		printf("[DDS-IO] fstat(type) DDS path=\"%s\" (forced regular)\n", handle.path.c_str());
+		// DDS exposes flat files only; treat as regular files.
+		return FileType::FILE_TYPE_REGULAR;
+	}
+#endif
+	// DDS debug: log the POSIX GetFileType swap point.
+#ifdef DUCKDB_USE_DDS_POSIX
+	printf("[DDS-IO] fstat(type) POSIX path=\"%s\"\n", handle.path.c_str());
+#endif
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	return GetFileTypeInternal(fd);
 }
@@ -1417,10 +1750,19 @@ const char *LocalFileSystem::NormalizeLocalPath(const string &path) {
 	return path.c_str() + GetFileUrlOffset(path);
 }
 
+/**
+ * Expands glob patterns; DDS does not support globs for Parquet paths.
+ */
 vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opener) {
 	if (path.empty()) {
 		return vector<OpenFileInfo>();
 	}
+#ifdef DUCKDB_USE_DDS_POSIX
+	if (UseDDSPosixForPath(path) && HasGlob(path)) {
+		throw NotImplementedException("DDS POSIX frontend does not support glob patterns for Parquet paths: \"%s\"",
+		                              path);
+	}
+#endif
 	// split up the path into separate chunks
 	vector<string> splits;
 
