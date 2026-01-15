@@ -86,6 +86,7 @@ endif()
 
 option(DISABLE_UNITY "Disable unity builds." FALSE)
 option(USE_WASM_THREADS "Should threads be used" FALSE)
+option(DUCKDB_USE_DDS_POSIX "Use DDS POSIX frontend for Parquet I/O." FALSE)
 if (${USE_WASM_THREADS})
    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
@@ -93,6 +94,34 @@ if (${USE_WASM_THREADS})
        -pthread
        -sSHARED_MEMORY=1
    )
+endif()
+
+if (DUCKDB_USE_DDS_POSIX)
+  # DDS POSIX headers live outside the repo; these defaults assume the symlinked DDSPosixInterface layout.
+  if (NOT DEFINED DUCKDB_DDS_POSIX_DIR)
+    set(DUCKDB_DDS_POSIX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/DDSPosixInterface"
+        CACHE PATH "DDS POSIX frontend directory")
+  endif()
+  if (NOT DEFINED DUCKDB_DDS_ROOT)
+    get_filename_component(DUCKDB_DDS_ROOT "${DUCKDB_DDS_POSIX_DIR}/../.." ABSOLUTE)
+    set(DUCKDB_DDS_ROOT "${DUCKDB_DDS_ROOT}" CACHE PATH "DDS root directory")
+  endif()
+  if (NOT DEFINED DUCKDB_DDS_COMMON_INCLUDE_DIR)
+    set(DUCKDB_DDS_COMMON_INCLUDE_DIR "${DUCKDB_DDS_ROOT}/Common/Include"
+        CACHE PATH "DDS common include directory")
+  endif()
+  if (NOT DEFINED DUCKDB_DDS_COMMON_SOURCE_HOST_DIR)
+    set(DUCKDB_DDS_COMMON_SOURCE_HOST_DIR "${DUCKDB_DDS_ROOT}/Common/Source/Host"
+        CACHE PATH "DDS common host source directory")
+  endif()
+  if (NOT DEFINED DUCKDB_DDS_FRONTEND_DIR)
+    set(DUCKDB_DDS_FRONTEND_DIR "${DUCKDB_DDS_ROOT}/StorageEngine/DDSFrontEnd"
+        CACHE PATH "DDS frontend directory")
+  endif()
+  if (NOT DEFINED DUCKDB_DDS_BACKEND_LIB_DIR)
+    set(DUCKDB_DDS_BACKEND_LIB_DIR "${DUCKDB_DDS_ROOT}/StorageEngine/BackEndLib"
+        CACHE PATH "DDS backend library directory")
+  endif()
 endif()
 
 option(FORCE_COLORED_OUTPUT
