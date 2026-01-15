@@ -16,6 +16,16 @@
 #include <unistd.h>
 
 /**
+ * Ensures DDS POSIX is shutdown so background poller threads are joined cleanly.
+ */
+struct DDSPosixShutdownGuard {
+	~DDSPosixShutdownGuard() {
+		// DDS uses a background poller thread; shutdown avoids std::terminate on exit.
+		DDSPosix::shutdown_posix();
+	}
+};
+
+/**
  * Extracts the DDS flat filename used by DuckDB (last path component only).
  * This intentionally keeps basename-only behavior to match NormalizeDDSPath.
  */
@@ -99,7 +109,12 @@ static void CollectParquetFiles(const std::string &dir, std::vector<std::string>
  */
 static bool LoadParquetIntoDDS(const std::string &source_path, const std::string &dds_name) {
 	constexpr size_t kBufferSize = 1 * 1024 * 1024;
+	constexpr size_t kDDSAlignment = 512;
 	std::vector<uint8_t> buffer(kBufferSize);
+	std::vector<uint8_t> staging;
+	staging.reserve(kBufferSize + kDDSAlignment);
+	std::vector<uint8_t> pending;
+	pending.reserve(kDDSAlignment);
 
 	int src_fd = open(source_path.c_str(), O_RDONLY | O_CLOEXEC);
 	if (src_fd < 0) {
@@ -107,6 +122,14 @@ static bool LoadParquetIntoDDS(const std::string &source_path, const std::string
 		             std::strerror(errno));
 		return false;
 	}
+	struct stat src_stat;
+	if (fstat(src_fd, &src_stat) != 0) {
+		std::fprintf(stderr, "[DDS-LOADER] Failed to stat source \"%s\": %s\n", source_path.c_str(),
+		             std::strerror(errno));
+		close(src_fd);
+		return false;
+	}
+	const auto source_size = static_cast<uint64_t>(src_stat.st_size);
 
 	int dds_fd = DDSPosix::open(dds_name.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0666);
 	if (dds_fd < 0) {
@@ -116,6 +139,7 @@ static bool LoadParquetIntoDDS(const std::string &source_path, const std::string
 	}
 
 	uint64_t offset = 0;
+	bool padded_tail = false;
 	while (true) {
 		const auto bytes_read = read(src_fd, buffer.data(), buffer.size());
 		if (bytes_read < 0) {
@@ -128,17 +152,60 @@ static bool LoadParquetIntoDDS(const std::string &source_path, const std::string
 		if (bytes_read == 0) {
 			break;
 		}
+		// Original direct pwrite path (kept for reference) did not enforce DDS alignment.
+		// const auto bytes_written =
+		//     DDSPosix::pwrite(dds_fd, buffer.data(), static_cast<size_t>(bytes_read), static_cast<off_t>(offset));
+		// if (bytes_written < 0 || bytes_written != bytes_read) { ... }
+		// offset += static_cast<uint64_t>(bytes_written);
+
+		// DDS quirk: only 512-byte aligned writes are supported (both size and offset).
+		staging.clear();
+		if (!pending.empty()) {
+			staging.insert(staging.end(), pending.begin(), pending.end());
+		}
+		staging.insert(staging.end(), buffer.begin(), buffer.begin() + bytes_read);
+		const auto aligned_bytes = (staging.size() / kDDSAlignment) * kDDSAlignment;
+		if (aligned_bytes > 0) {
+			const auto bytes_written =
+			    DDSPosix::pwrite(dds_fd, staging.data(), aligned_bytes, static_cast<off_t>(offset));
+			if (bytes_written < 0 || static_cast<size_t>(bytes_written) != aligned_bytes) {
+				std::fprintf(stderr,
+				             "[DDS-LOADER] Failed to write DDS \"%s\" at offset %llu: %s\n",
+				             dds_name.c_str(), static_cast<unsigned long long>(offset), std::strerror(errno));
+				DDSPosix::close(dds_fd);
+				close(src_fd);
+				return false;
+			}
+			offset += static_cast<uint64_t>(bytes_written);
+		}
+		pending.assign(staging.begin() + aligned_bytes, staging.end());
+	}
+	if (!pending.empty()) {
+		// Pad the tail to 512 bytes, then truncate back to the original size.
+		std::vector<uint8_t> padded(kDDSAlignment, 0);
+		std::memcpy(padded.data(), pending.data(), pending.size());
 		const auto bytes_written =
-		    DDSPosix::pwrite(dds_fd, buffer.data(), static_cast<size_t>(bytes_read), static_cast<off_t>(offset));
-		if (bytes_written < 0 || bytes_written != bytes_read) {
+		    DDSPosix::pwrite(dds_fd, padded.data(), padded.size(), static_cast<off_t>(offset));
+		if (bytes_written < 0 || static_cast<size_t>(bytes_written) != padded.size()) {
 			std::fprintf(stderr,
-			             "[DDS-LOADER] Failed to write DDS \"%s\" at offset %llu: %s\n",
+			             "[DDS-LOADER] Failed to write padded DDS \"%s\" at offset %llu: %s\n",
 			             dds_name.c_str(), static_cast<unsigned long long>(offset), std::strerror(errno));
 			DDSPosix::close(dds_fd);
 			close(src_fd);
 			return false;
 		}
 		offset += static_cast<uint64_t>(bytes_written);
+		padded_tail = true;
+	}
+	if (padded_tail) {
+		// Restore the exact source size so Parquet footer offsets stay correct.
+		if (DDSPosix::ftruncate(dds_fd, static_cast<off_t>(source_size)) != 0) {
+			std::fprintf(stderr, "[DDS-LOADER] Failed to truncate DDS \"%s\" to size %llu: %s\n",
+			             dds_name.c_str(), static_cast<unsigned long long>(source_size), std::strerror(errno));
+			DDSPosix::close(dds_fd);
+			close(src_fd);
+			return false;
+		}
 	}
 
 	DDSPosix::close(dds_fd);
@@ -147,6 +214,9 @@ static bool LoadParquetIntoDDS(const std::string &source_path, const std::string
 }
 
 int main() {
+	// DDS debug: ensure shutdown happens even on early returns.
+	DDSPosixShutdownGuard dds_shutdown_guard;
+
 	const char *env_dir = std::getenv("DDS_PARQUET_DIR");
 	if (!env_dir || std::strlen(env_dir) == 0) {
 		std::fprintf(stderr, "[DDS-LOADER] Set DDS_PARQUET_DIR to a directory containing parquet files.\n");
