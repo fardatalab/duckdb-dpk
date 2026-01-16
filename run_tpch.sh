@@ -3,8 +3,9 @@
 # Configuration
 DUCKDB_BIN="./build/release/duckdb"
 DB_FILE="tpch_metadata.db"
-QUERY_DIR="/data/dpk/GPUDB_Profiler/TPC-H/queries"
-PROFILE_DIR="./tpch_profiles"
+#QUERY_DIR="/data/dpk/GPUDB_Profiler/TPC-H/queries"
+QUERY_DIR="/data/dbcomm/tpch-queries"
+PROFILE_DIR="./tpch_test_profiles"
 SECRET_KEY="01234567890123456789012345678901"
 KEY_NAME="tpch_master_key"
 
@@ -17,7 +18,8 @@ echo "Profile Directory: $PROFILE_DIR"
 
 # Iterate through all 22 TPC-H queries
 for q_nr in {1..22}; do
-    QUERY_FILE="$QUERY_DIR/query${q_nr}.sql"
+    #QUERY_FILE="$QUERY_DIR/query${q_nr}.sql"
+    QUERY_FILE="$QUERY_DIR/tpch-q${q_nr}.sql"
     PROFILE_FILE="$(pwd)/$PROFILE_DIR/query${q_nr}.json" # Use absolute path
     
     if [ ! -f "$QUERY_FILE" ]; then
