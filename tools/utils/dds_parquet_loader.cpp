@@ -1,3 +1,29 @@
+/**
+ * @file dds_parquet_loader.cpp
+ * @brief Utility to load local Parquet files into the DDS POSIX storage used by DuckDB.
+ *
+ * Purpose:
+ *  - Recursively discover ``.parquet`` files under the directory specified by the
+ *    environment variable ``DDS_PARQUET_DIR``.
+ *  - Copy each discovered file into DDS using the original file's basename as a flat
+ *    DDS filename (no directory structure preserved).
+ *  - Ensure writes conform to the DDS alignment requirement (512-byte aligned offsets
+ *    and write sizes). If the source's final write is not 512-byte aligned, the loader
+ *    pads the final block and then truncates the DDS object back to the exact source size
+ *    so Parquet footer offsets remain valid.
+ *  - Abort on basename collisions to avoid accidental overwrites (DDS uses a flat namespace).
+ *
+ * Usage:
+ *  - Build DuckDB with DDS POSIX support (e.g., ``-DDUCKDB_USE_DDS_POSIX=1``).
+ *  - Set ``DDS_PARQUET_DIR`` to the directory to scan and run this tool. Progress and
+ *    errors are printed to stdout/stderr; the process returns non-zero on failure.
+ *
+ * Warnings & limitations:
+ *  - DDS has a flat namespace: files that share the same basename will conflict. Resolve
+ *    collisions before running this loader.
+ *  - Ensure the running user has appropriate rights to the DDS backend and the source files.
+ */
+
 #include "DDSPosix.h"
 
 #include <cerrno>
