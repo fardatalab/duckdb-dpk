@@ -4,12 +4,17 @@
 			"path": "extension/parquet/column_reader.cpp",
 			"bookmarks": [
 				{
+					"line": 260,
+					"column": 0,
+					"label": "ColumnReader::PrepareRead PageIsFilteredOut"
+				},
+				{
 					"line": 291,
 					"column": 0,
 					"label": "ColumnReader::PreparePageV2: decompress and read"
 				},
 				{
-					"line": 359,
+					"line": 360,
 					"column": 0,
 					"label": "ColumnReader::DecompressInternal"
 				}
@@ -32,6 +37,16 @@
 					"line": 996,
 					"column": 0,
 					"label": "ParquetReader::ReadData->ParquetCrypto::ReadData"
+				},
+				{
+					"line": 1251,
+					"column": 0,
+					"label": "ParquetReader::InitializeScan"
+				},
+				{
+					"line": 1347,
+					"column": 0,
+					"label": "SkipRowGroup-ReadRowGroup"
 				}
 			]
 		}
