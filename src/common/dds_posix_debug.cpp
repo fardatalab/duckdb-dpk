@@ -3,6 +3,15 @@
 #include <atomic>
 #include <cstdio>
 
+// DDS POSIX debug print macro.
+// To enable these prints when DUCKDB_USE_DDS_POSIX is enabled, define DUCKDB_DDS_DEBUG_PRINT_ENABLED=1 at compile time.
+// Example: -DDUCKDB_DDS_DEBUG_PRINT_ENABLED=1
+#if defined(DUCKDB_USE_DDS_POSIX) && defined(DUCKDB_DDS_DEBUG_PRINT_ENABLED) && (DUCKDB_DDS_DEBUG_PRINT_ENABLED)
+#define DUCKDB_DDS_DEBUG_PRINT(...) printf(__VA_ARGS__)
+#else
+#define DUCKDB_DDS_DEBUG_PRINT(...) ((void)0)
+#endif
+
 namespace duckdb {
 
 namespace {
@@ -45,9 +54,10 @@ void DDSPosixDebugPrintAndReset() {
 	const auto aligned_bytes = dds_pread_aligned_bytes.exchange(0, std::memory_order_relaxed);
 	const auto unaligned_bytes = dds_pread_unaligned_bytes.exchange(0, std::memory_order_relaxed);
 
-	printf("[DDS-IO] pread alignment calls aligned=%llu unaligned=%llu bytes aligned=%llu unaligned=%llu\n",
-	       static_cast<unsigned long long>(aligned_calls), static_cast<unsigned long long>(unaligned_calls),
-	       static_cast<unsigned long long>(aligned_bytes), static_cast<unsigned long long>(unaligned_bytes));
+	DUCKDB_DDS_DEBUG_PRINT(
+	    "[DDS-IO] pread alignment calls aligned=%llu unaligned=%llu bytes aligned=%llu unaligned=%llu\n",
+	    static_cast<unsigned long long>(aligned_calls), static_cast<unsigned long long>(unaligned_calls),
+	    static_cast<unsigned long long>(aligned_bytes), static_cast<unsigned long long>(unaligned_bytes));
 #endif
 }
 

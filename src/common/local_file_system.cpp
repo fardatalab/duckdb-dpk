@@ -19,6 +19,16 @@
 
 #include <cstdint>
 #include <cstdio>
+
+// DDS POSIX debug print macro.
+// To enable these prints when DUCKDB_USE_DDS_POSIX is enabled, define DUCKDB_DDS_DEBUG_PRINT_ENABLED=1 at compile time.
+// Example: -DDUCKDB_DDS_DEBUG_PRINT_ENABLED=1
+#if defined(DUCKDB_USE_DDS_POSIX) && defined(DUCKDB_DDS_DEBUG_PRINT_ENABLED) && (DUCKDB_DDS_DEBUG_PRINT_ENABLED)
+#define DUCKDB_DDS_DEBUG_PRINT(...) printf(__VA_ARGS__)
+#else
+#define DUCKDB_DDS_DEBUG_PRINT(...) ((void)0)
+#endif
+
 #include <sys/stat.h>
 
 #ifndef _WIN32
@@ -117,7 +127,8 @@ bool LocalFileSystem::FileExists(const string &filename, optional_ptr<FileOpener
 			auto dds_path = NormalizeDDSPath(filename);
 			struct stat status;
 			// DDS debug: log the DDS FileExists swap point.
-			printf("[DDS-IO] FileExists DDS path=\"%s\" dds=\"%s\"\n", filename.c_str(), dds_path.c_str());
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] FileExists DDS path=\"%s\" dds=\"%s\"\n", filename.c_str(),
+			                       dds_path.c_str());
 			// DDS does not expose access(2); treat a successful dds_stat as existence.
 			// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(dds_path.c_str(), &status);
 			if (DDSPosix::dds_stat(dds_path.c_str(), &status) == 0) {
@@ -130,7 +141,7 @@ bool LocalFileSystem::FileExists(const string &filename, optional_ptr<FileOpener
 		auto normalized_file = NormalizeLocalPath(filename);
 		// DDS debug: log the POSIX FileExists swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] FileExists POSIX path=\"%s\"\n", normalized_file);
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] FileExists POSIX path=\"%s\"\n", normalized_file);
 #endif
 		// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(normalized_file, &status);
 		if (access(normalized_file, 0) == 0) {
@@ -155,7 +166,7 @@ bool LocalFileSystem::IsPipe(const string &filename, optional_ptr<FileOpener> op
 		if (UseDDSPosixForPath(filename)) {
 			// DDS debug: log the DDS IsPipe swap point (DDS never uses pipes).
 #ifdef DUCKDB_USE_DDS_POSIX
-			printf("[DDS-IO] IsPipe DDS path=\"%s\" (forced false)\n", filename.c_str());
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] IsPipe DDS path=\"%s\" (forced false)\n", filename.c_str());
 #endif
 			// DDS swap candidate: return false (DDS uses flat files, never pipes).
 			return false;
@@ -163,7 +174,7 @@ bool LocalFileSystem::IsPipe(const string &filename, optional_ptr<FileOpener> op
 		auto normalized_file = NormalizeLocalPath(filename);
 		// DDS debug: log the POSIX IsPipe swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] IsPipe POSIX path=\"%s\"\n", normalized_file);
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] IsPipe POSIX path=\"%s\"\n", normalized_file);
 #endif
 		// DDS swap candidate: int dds_rc = DDSPosix::dds_stat(normalized_file, &status);
 		if (access(normalized_file, 0) == 0) {
@@ -255,7 +266,7 @@ public:
 			if (UseDDSPosixForPath(path)) {
 				const auto dds_path = NormalizeDDSPath(path);
 				// DDS debug: log the DDS close swap point.
-				printf("[DDS-IO] close DDS path=\"%s\" dds=\"%s\"\n", path.c_str(), dds_path.c_str());
+				DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] close DDS path=\"%s\" dds=\"%s\"\n", path.c_str(), dds_path.c_str());
 				// DDS swap candidate: DDSPosix::close(fd);
 				DDSPosix::close(fd);
 			} else
@@ -263,7 +274,7 @@ public:
 			{
 				// DDS debug: log the POSIX close swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-				printf("[DDS-IO] close POSIX path=\"%s\"\n", path.c_str());
+				DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] close POSIX path=\"%s\"\n", path.c_str());
 #endif
 				// DDS swap candidate: DDSPosix::close(fd);
 				close(fd);
@@ -482,7 +493,8 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 #ifdef DUCKDB_USE_DDS_POSIX
 	if (use_dds) {
 		// DDS debug: log the DDS open swap point.
-		printf("[DDS-IO] open DDS path=\"%s\" dds=\"%s\" flags=0x%x\n", path.c_str(), dds_path.c_str(), open_flags);
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] open DDS path=\"%s\" dds=\"%s\" flags=0x%x\n", path.c_str(), dds_path.c_str(),
+		                       open_flags);
 		// DDS swap candidate: int fd = DDSPosix::open(normalized_path, open_flags, filesec);
 		fd = DDSPosix::open(dds_path.c_str(), open_flags, filesec);
 	} else
@@ -490,7 +502,7 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	{
 		// DDS debug: log the POSIX open swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] open POSIX path=\"%s\" flags=0x%x\n", normalized_path, open_flags);
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] open POSIX path=\"%s\" flags=0x%x\n", normalized_path, open_flags);
 #endif
 		// DDS swap candidate: int fd = DDSPosix::open(normalized_path, open_flags, filesec);
 		fd = open(normalized_path, open_flags, filesec);
@@ -594,8 +606,8 @@ void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
 #ifdef DUCKDB_USE_DDS_POSIX
 	if (UseDDSPosixForPath(handle.path)) {
 		// DDS debug: log the DDS lseek swap point.
-		printf("[DDS-IO] lseek(SET) DDS path=\"%s\" offset=%llu\n", handle.path.c_str(),
-		       static_cast<unsigned long long>(location));
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] lseek(SET) DDS path=\"%s\" offset=%llu\n", handle.path.c_str(),
+		                       static_cast<unsigned long long>(location));
 		// DDS swap candidate: off_t offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
 		offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
 	} else
@@ -603,8 +615,8 @@ void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
 	{
 		// DDS debug: log the POSIX lseek swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] lseek(SET) POSIX path=\"%s\" offset=%llu\n", handle.path.c_str(),
-		       static_cast<unsigned long long>(location));
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] lseek(SET) POSIX path=\"%s\" offset=%llu\n", handle.path.c_str(),
+		                       static_cast<unsigned long long>(location));
 #endif
 		// DDS swap candidate: off_t offset = DDSPosix::lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
 		offset = lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
@@ -625,7 +637,7 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 #ifdef DUCKDB_USE_DDS_POSIX
 	if (UseDDSPosixForPath(handle.path)) {
 		// DDS debug: log the DDS lseek swap point.
-		printf("[DDS-IO] lseek(CUR) DDS path=\"%s\"\n", handle.path.c_str());
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] lseek(CUR) DDS path=\"%s\"\n", handle.path.c_str());
 		// DDS swap candidate: off_t position = DDSPosix::lseek(fd, 0, SEEK_CUR);
 		position = DDSPosix::lseek(fd, 0, SEEK_CUR);
 	} else
@@ -633,7 +645,7 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 	{
 		// DDS debug: log the POSIX lseek swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] lseek(CUR) POSIX path=\"%s\"\n", handle.path.c_str());
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] lseek(CUR) POSIX path=\"%s\"\n", handle.path.c_str());
 #endif
 		// DDS swap candidate: off_t position = DDSPosix::lseek(fd, 0, SEEK_CUR);
 		position = lseek(fd, 0, SEEK_CUR);
@@ -658,8 +670,8 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 #ifdef DUCKDB_USE_DDS_POSIX
 		if (UseDDSPosixForPath(handle.path)) {
 			// DDS debug: log the DDS pread swap point and record alignment stats.
-			printf("[DDS-IO] pread DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
-			       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pread DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			                       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
 			DDSPosixDebugRecordPread(UnsafeNumericCast<uint64_t>(nr_bytes), UnsafeNumericCast<uint64_t>(location));
 			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
 			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
@@ -671,8 +683,8 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 		{
 			// DDS debug: log the POSIX pread swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-			printf("[DDS-IO] pread POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
-			       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pread POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			                       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
 #endif
 			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
 			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
@@ -707,7 +719,8 @@ int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes
 #ifdef DUCKDB_USE_DDS_POSIX
 	if (UseDDSPosixForPath(handle.path)) {
 		// DDS debug: log the DDS read swap point.
-		printf("[DDS-IO] read DDS path=\"%s\" size=%lld\n", handle.path.c_str(), static_cast<long long>(nr_bytes));
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] read DDS path=\"%s\" size=%lld\n", handle.path.c_str(),
+		                       static_cast<long long>(nr_bytes));
 		// DDS swap candidate: int64_t bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
 		bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
 	} else
@@ -715,7 +728,8 @@ int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes
 	{
 		// DDS debug: log the POSIX read swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-		printf("[DDS-IO] read POSIX path=\"%s\" size=%lld\n", handle.path.c_str(), static_cast<long long>(nr_bytes));
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] read POSIX path=\"%s\" size=%lld\n", handle.path.c_str(),
+		                       static_cast<long long>(nr_bytes));
 #endif
 		// DDS swap candidate: int64_t bytes_read = DDSPosix::read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
 		bytes_read = read(fd, buffer, UnsafeNumericCast<size_t>(nr_bytes));
@@ -747,8 +761,9 @@ void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, 
 #ifdef DUCKDB_USE_DDS_POSIX
 		if (UseDDSPosixForPath(handle.path)) {
 			// DDS debug: log the DDS pwrite swap point.
-			printf("[DDS-IO] pwrite DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
-			       static_cast<long long>(bytes_to_write), static_cast<unsigned long long>(current_location));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pwrite DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			                       static_cast<long long>(bytes_to_write),
+			                       static_cast<unsigned long long>(current_location));
 			// DDS swap candidate: int64_t bytes_written = DDSPosix::pwrite(
 			//     fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
 			//     UnsafeNumericCast<off_t>(current_location));
@@ -759,8 +774,9 @@ void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, 
 		{
 			// DDS debug: log the POSIX pwrite swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-			printf("[DDS-IO] pwrite POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
-			       static_cast<long long>(bytes_to_write), static_cast<unsigned long long>(current_location));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pwrite POSIX path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
+			                       static_cast<long long>(bytes_to_write),
+			                       static_cast<unsigned long long>(current_location));
 #endif
 			// DDS swap candidate: int64_t bytes_written = DDSPosix::pwrite(
 			//     fd, write_buffer, UnsafeNumericCast<size_t>(bytes_to_write),
@@ -800,8 +816,8 @@ int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_byte
 #ifdef DUCKDB_USE_DDS_POSIX
 		if (UseDDSPosixForPath(handle.path)) {
 			// DDS debug: log the DDS write swap point.
-			printf("[DDS-IO] write DDS path=\"%s\" size=%lld\n", handle.path.c_str(),
-			       static_cast<long long>(bytes_to_write_this_call));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] write DDS path=\"%s\" size=%lld\n", handle.path.c_str(),
+			                       static_cast<long long>(bytes_to_write_this_call));
 			// DDS swap candidate: int64_t current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
 			current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
 		} else
@@ -809,8 +825,8 @@ int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_byte
 		{
 			// DDS debug: log the POSIX write swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-			printf("[DDS-IO] write POSIX path=\"%s\" size=%lld\n", handle.path.c_str(),
-			       static_cast<long long>(bytes_to_write_this_call));
+			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] write POSIX path=\"%s\" size=%lld\n", handle.path.c_str(),
+			                       static_cast<long long>(bytes_to_write_this_call));
 #endif
 			// DDS swap candidate: int64_t current_bytes_written = DDSPosix::write(fd, buffer, bytes_to_write_this_call);
 			current_bytes_written = write(fd, buffer, bytes_to_write_this_call);
@@ -856,7 +872,7 @@ int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 	if (UseDDSPosixForPath(handle.path)) {
 		auto dds_path = NormalizeDDSPath(handle.path);
 		// DDS debug: log the DDS stat swap point.
-		printf("[DDS-IO] fstat DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(), dds_path.c_str());
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(), dds_path.c_str());
 		// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 		if (DDSPosix::dds_stat(dds_path.c_str(), &s) == -1) {
 			throw IOException("Failed to get file size for DDS file \"%s\": %s", {{"errno", std::to_string(errno)}},
@@ -867,7 +883,7 @@ int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 #endif
 	// DDS debug: log the POSIX fstat swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-	printf("[DDS-IO] fstat POSIX path=\"%s\"\n", handle.path.c_str());
+	DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat POSIX path=\"%s\"\n", handle.path.c_str());
 #endif
 	// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 	if (fstat(fd, &s) == -1) {
@@ -889,7 +905,8 @@ timestamp_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 	if (UseDDSPosixForPath(handle.path)) {
 		auto dds_path = NormalizeDDSPath(handle.path);
 		// DDS debug: log the DDS stat swap point.
-		printf("[DDS-IO] fstat(mtime) DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(), dds_path.c_str());
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat(mtime) DDS path=\"%s\" dds=\"%s\"\n", handle.path.c_str(),
+		                       dds_path.c_str());
 		// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 		if (DDSPosix::dds_stat(dds_path.c_str(), &s) == -1) {
 			throw IOException("Failed to get last modified time for DDS file \"%s\": %s", {{"errno", std::to_string(errno)}},
@@ -900,7 +917,7 @@ timestamp_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 #endif
 	// DDS debug: log the POSIX fstat swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-	printf("[DDS-IO] fstat(mtime) POSIX path=\"%s\"\n", handle.path.c_str());
+	DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat(mtime) POSIX path=\"%s\"\n", handle.path.c_str());
 #endif
 	// DDS swap candidate: DDSPosix::dds_stat(handle.path.c_str(), &s) (DDS provides path-based stat only).
 	if (fstat(fd, &s) == -1) {
@@ -918,14 +935,14 @@ FileType LocalFileSystem::GetFileType(FileHandle &handle) {
 #ifdef DUCKDB_USE_DDS_POSIX
 	if (UseDDSPosixForPath(handle.path)) {
 		// DDS debug: log the DDS GetFileType swap point.
-		printf("[DDS-IO] fstat(type) DDS path=\"%s\" (forced regular)\n", handle.path.c_str());
+		DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat(type) DDS path=\"%s\" (forced regular)\n", handle.path.c_str());
 		// DDS exposes flat files only; treat as regular files.
 		return FileType::FILE_TYPE_REGULAR;
 	}
 #endif
 	// DDS debug: log the POSIX GetFileType swap point.
 #ifdef DUCKDB_USE_DDS_POSIX
-	printf("[DDS-IO] fstat(type) POSIX path=\"%s\"\n", handle.path.c_str());
+	DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] fstat(type) POSIX path=\"%s\"\n", handle.path.c_str());
 #endif
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	return GetFileTypeInternal(fd);
