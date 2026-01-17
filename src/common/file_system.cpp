@@ -718,6 +718,20 @@ FileHandle::FileHandle(FileSystem &file_system, string path_p, FileOpenFlags fla
 FileHandle::~FileHandle() {
 }
 
+// Scope guard that temporarily stores a query context on the handle while reads are in flight.
+struct FileHandleQueryContextScope {
+	FileHandleQueryContextScope(FileHandle &handle, optional_ptr<ClientContext> context)
+	    : handle(handle), previous(handle.GetQueryContext()) {
+		handle.SetQueryContext(context);
+	}
+	~FileHandleQueryContextScope() {
+		handle.SetQueryContext(previous);
+	}
+
+	FileHandle &handle;
+	optional_ptr<ClientContext> previous;
+};
+
 int64_t FileHandle::Read(void *buffer, idx_t nr_bytes) {
 	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 }
@@ -727,6 +741,7 @@ int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
 		context.GetClientContext()->client_data->profiler->AddBytesRead(nr_bytes);
 	}
 
+	FileHandleQueryContextScope scope(*this, context.GetClientContext());
 	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
 }
 
@@ -747,6 +762,7 @@ void FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes, idx_t 
 		context.GetClientContext()->client_data->profiler->AddBytesRead(nr_bytes);
 	}
 
+	FileHandleQueryContextScope scope(*this, context.GetClientContext());
 	file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
 }
 
@@ -845,6 +861,14 @@ void FileHandle::TryAddLogger(FileOpener &opener) {
 	if (database && Logger::Get(*database).ShouldLog(FileSystemLogType::NAME, FileSystemLogType::LEVEL)) {
 		logger = database->GetLogManager().GlobalLoggerReference();
 	}
+}
+
+void FileHandle::SetQueryContext(optional_ptr<ClientContext> context) {
+	query_context = context;
+}
+
+optional_ptr<ClientContext> FileHandle::GetQueryContext() const {
+	return query_context;
 }
 
 idx_t FileHandle::GetProgress() {

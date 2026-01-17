@@ -118,7 +118,7 @@ struct QueryMetrics {
 	//! Initialize query-level counters to zero.
 	QueryMetrics()
 	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
-	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0) {};
+	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), pread_time_ns(0), pread_call_count(0) {};
 
 	ProfilingInfo query_global_info;
 
@@ -138,6 +138,10 @@ struct QueryMetrics {
 	atomic<uint64_t> parquet_decompress_time_ns;
 	//! Number of parquet decompression operations in this query
 	atomic<uint64_t> parquet_decompress_call_count;
+	//! Total nanoseconds spent issuing LocalFileSystem::Read pread calls in this query
+	atomic<uint64_t> pread_time_ns;
+	//! Number of LocalFileSystem::Read pread calls in this query
+	atomic<uint64_t> pread_call_count;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -175,6 +179,8 @@ public:
 	DUCKDB_API void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
 	//! Adds a parquet decompression timing in nanoseconds and increments the call counter.
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
+	//! Adds a pread timing entry so average latency can be derived before the profiler output is rendered.
+	DUCKDB_API void AddPreadMetrics(uint64_t elapsed_ns);
 
 	DUCKDB_API void StartExplainAnalyze();
 

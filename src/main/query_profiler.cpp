@@ -110,6 +110,8 @@ void QueryProfiler::Reset() {
 	query_metrics.parquet_decrypt_call_count = 0;
 	query_metrics.parquet_decompress_time_ns = 0;
 	query_metrics.parquet_decompress_call_count = 0;
+	query_metrics.pread_time_ns = 0;
+	query_metrics.pread_call_count = 0;
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -270,6 +272,15 @@ void QueryProfiler::EndQuery() {
 			if (info.Enabled(settings, MetricsType::TOTAL_BYTES_WRITTEN)) {
 				info.metrics[MetricsType::TOTAL_BYTES_WRITTEN] = Value::UBIGINT(query_metrics.total_bytes_written);
 			}
+			if (info.Enabled(settings, MetricsType::PREAD_LATENCY)) {
+				double average_seconds = 0.0;
+				const auto call_count = query_metrics.pread_call_count.load();
+				if (call_count != 0) {
+					average_seconds =
+					    static_cast<double>(query_metrics.pread_time_ns.load()) / static_cast<double>(call_count) * 1e-9;
+				}
+				info.metrics[MetricsType::PREAD_LATENCY] = Value::DOUBLE(average_seconds);
+			}
 			// Added parquet crypto/codec metrics to the query-global output.
 			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_TIME)) {
 				info.metrics[MetricsType::PARQUET_DECRYPTION_TIME] =
@@ -358,6 +369,14 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 	if (IsEnabled()) {
 		query_metrics.parquet_decompress_time_ns += elapsed_ns;
 		query_metrics.parquet_decompress_call_count++;
+	}
+}
+
+// Records time spent in LocalFileSystem::Read pread calls for averaging later.
+void QueryProfiler::AddPreadMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.pread_time_ns += elapsed_ns;
+		query_metrics.pread_call_count++;
 	}
 }
 

@@ -56,6 +56,7 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::ROWS_RETURNED,
 	        MetricsType::TOTAL_BYTES_READ,
 	        MetricsType::TOTAL_BYTES_WRITTEN,
+	        MetricsType::PREAD_LATENCY,
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
@@ -89,6 +90,7 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::PREAD_LATENCY:
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
@@ -224,6 +226,7 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::PREAD_LATENCY:
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());

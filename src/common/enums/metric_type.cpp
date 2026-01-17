@@ -244,6 +244,7 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::PARQUET_DECOMPRESSION_COUNT:
         case MetricsType::PARQUET_DECRYPTION_TIME:
         case MetricsType::PARQUET_DECRYPTION_COUNT:
+        case MetricsType::PREAD_LATENCY:
             return true;
         default:
             return false;

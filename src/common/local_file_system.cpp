@@ -11,9 +11,11 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/log_manager.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include <cstdint>
 #include <cstdio>
+#include <chrono>
 #include <sys/stat.h>
 
 #ifndef _WIN32
@@ -473,9 +475,14 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 	auto bytes_to_read = nr_bytes;
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto read_buffer = char_ptr_cast(buffer);
+	auto client_context = handle.GetQueryContext();
+	// Track each pread call's timing so QueryProfiler can compute the average latency for this query.
 	while (nr_bytes > 0) {
+		const auto start = std::chrono::steady_clock::now();
 		int64_t bytes_read =
 		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		const auto elapsed_ns =
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
 		if (bytes_read == -1) {
 			throw IOException("Could not read from file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 			                  strerror(errno));
@@ -484,6 +491,9 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			throw IOException(
 			    "Could not read enough bytes from file \"%s\": attempted to read %llu bytes from location %llu",
 			    handle.path, nr_bytes, location);
+		}
+		if (client_context) {
+			QueryProfiler::Get(*client_context).AddPreadMetrics(NumericCast<uint64_t>(elapsed_ns));
 		}
 		read_buffer += bytes_read;
 		nr_bytes -= bytes_read;
