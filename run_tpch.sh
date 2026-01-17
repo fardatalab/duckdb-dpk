@@ -5,7 +5,7 @@ DUCKDB_BIN="./build/release/duckdb"
 DB_FILE="tpch_metadata.db"
 #QUERY_DIR="/data/dpk/GPUDB_Profiler/TPC-H/queries"
 QUERY_DIR="/data/dbcomm/tpch-queries"
-PROFILE_DIR="./tpch_test_profiles"
+PROFILE_DIR="./tpch_test_profiles_orig"
 SECRET_KEY="01234567890123456789012345678901"
 KEY_NAME="tpch_master_key"
 
