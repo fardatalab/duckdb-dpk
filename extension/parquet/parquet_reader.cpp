@@ -89,7 +89,7 @@ static void ParseParquetFooter(data_ptr_t buffer, const string &file_path, idx_t
 	}
 }
 
-// Loads parquet metadata and accounts for encrypted footer decryption timing.
+// Loads parquet metadata and accounts for encrypted footer decryption compute time (transport reads excluded).
 static shared_ptr<ParquetFileMetadataCache>
 LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &file_handle,
              const shared_ptr<const ParquetEncryptionConfig> &encryption_config, const EncryptionUtil &encryption_util,
@@ -165,12 +165,18 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 			throw InvalidInputException("File '%s' is encrypted with AES_GCM_CTR_V1, but only AES_GCM_V1 is supported",
 			                            file_handle.GetPath());
 		}
-		const auto start = std::chrono::steady_clock::now();
-		ParquetCrypto::Read(*metadata, *file_proto, encryption_config->GetFooterKey(), encryption_util);
-		const auto elapsed_ns =
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
-		// Record encrypted footer read as part of parquet decryption time.
-		QueryProfiler::Get(context).AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// Original timing block retained for reference.
+		// const auto start = std::chrono::steady_clock::now();
+		// ParquetCrypto::Read(*metadata, *file_proto, encryption_config->GetFooterKey(), encryption_util);
+		// const auto elapsed_ns =
+		//     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		// // Record encrypted footer read as part of parquet decryption time.
+		// QueryProfiler::Get(context).AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// Modified: record compute-only decryption time (transport reads excluded).
+		uint64_t decrypt_compute_ns = 0;
+		ParquetCrypto::Read(*metadata, *file_proto, encryption_config->GetFooterKey(), encryption_util,
+		                    &decrypt_compute_ns);
+		QueryProfiler::Get(context).AddParquetDecryptionMetrics(NumericCast<uint64_t>(decrypt_compute_ns));
 	} else {
 		metadata->read(file_proto.get());
 	}
@@ -993,30 +999,46 @@ unique_ptr<BaseStatistics> ParquetReader::ReadStatistics(const ParquetUnionData 
 	                              file_col_idx);
 }
 
-// Reads a thrift object (such as page header) and records decryption timing if encryption is enabled.
+// Reads a thrift object (such as page header) and records compute-only decryption time if encryption is enabled.
 uint32_t ParquetReader::Read(duckdb_apache::thrift::TBase &object, TProtocol &iprot) {
 	if (parquet_options.encryption_config) {
-		const auto start = std::chrono::steady_clock::now();
-		const auto result =
-		    ParquetCrypto::Read(object, iprot, parquet_options.encryption_config->GetFooterKey(), *encryption_util);
-		const auto elapsed_ns =
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
-		AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// Original timing block retained for reference.
+		// const auto start = std::chrono::steady_clock::now();
+		// const auto result =
+		//     ParquetCrypto::Read(object, iprot, parquet_options.encryption_config->GetFooterKey(), *encryption_util);
+		// const auto elapsed_ns =
+		//     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		// AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// return result;
+		// Modified: record compute-only decryption time (transport reads excluded).
+		uint64_t decrypt_compute_ns = 0;
+		const auto result = ParquetCrypto::Read(object, iprot, parquet_options.encryption_config->GetFooterKey(),
+		                                        *encryption_util, &decrypt_compute_ns);
+		AddParquetDecryptionMetrics(NumericCast<uint64_t>(decrypt_compute_ns));
 		return result;
 	}
 	return object.read(&iprot);
 }
 
-// Reads a data buffer and records decryption timing if encryption is enabled.
+// Reads a data buffer and records compute-only decryption time if encryption is enabled.
 uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
                                  const uint32_t buffer_size) {
 	if (parquet_options.encryption_config) {
-		const auto start = std::chrono::steady_clock::now();
+		// Original timing block retained for reference.
+		// const auto start = std::chrono::steady_clock::now();
+		// const auto result = ParquetCrypto::ReadData(iprot, buffer, buffer_size,
+		//                                             parquet_options.encryption_config->GetFooterKey(),
+		//                                             *encryption_util);
+		// const auto elapsed_ns =
+		//     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		// AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// return result;
+		// Modified: record compute-only decryption time (transport reads excluded).
+		uint64_t decrypt_compute_ns = 0;
 		const auto result = ParquetCrypto::ReadData(iprot, buffer, buffer_size,
-		                                            parquet_options.encryption_config->GetFooterKey(), *encryption_util);
-		const auto elapsed_ns =
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
-		AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
+		                                            parquet_options.encryption_config->GetFooterKey(),
+		                                            *encryption_util, &decrypt_compute_ns);
+		AddParquetDecryptionMetrics(NumericCast<uint64_t>(decrypt_compute_ns));
 		return result;
 	}
 	return iprot.getTransport()->read(buffer, buffer_size);

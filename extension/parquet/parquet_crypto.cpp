@@ -8,6 +8,8 @@
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/storage/arena_allocator.hpp"
 
+#include <chrono>
+
 namespace duckdb {
 
 ParquetKeys &ParquetKeys::Get(ClientContext &context) {
@@ -224,6 +226,13 @@ public:
 		return result;
 	}
 
+	/**
+	 * Returns the accumulated AES/GCM compute time in nanoseconds (transport reads excluded).
+	 */
+	uint64_t GetDecryptComputeNs() const {
+		return decrypt_compute_ns;
+	}
+
 private:
 	void Initialize(const string &key) {
 		// Read encoded length (don't add to read_bytes)
@@ -244,6 +253,7 @@ private:
 		transport_remaining -= trans.read(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size);
 
 		// Decrypt from read_buffer + block size into read_buffer start (decryption can trail behind in same buffer)
+		const auto compute_start = std::chrono::steady_clock::now();
 #ifdef DEBUG
 		auto size = aes->Process(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size, buf,
 		                         ParquetCrypto::CRYPTO_BLOCK_SIZE + ParquetCrypto::BLOCK_SIZE);
@@ -252,6 +262,9 @@ private:
 		aes->Process(read_buffer + ParquetCrypto::BLOCK_SIZE, read_buffer_size, buf,
 		             ParquetCrypto::CRYPTO_BLOCK_SIZE + ParquetCrypto::BLOCK_SIZE);
 #endif
+		const auto compute_end = std::chrono::steady_clock::now();
+		decrypt_compute_ns +=
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(compute_end - compute_start).count();
 		read_buffer_offset = 0;
 	}
 
@@ -262,6 +275,9 @@ private:
 
 	//! AES context and buffers
 	shared_ptr<EncryptionState> aes;
+
+	//! Tracks AES/GCM compute time only (excludes transport reads).
+	uint64_t decrypt_compute_ns = 0;
 
 	//! We read/decrypt big blocks at a time
 	data_t read_buffer[ParquetCrypto::CRYPTO_BLOCK_SIZE + ParquetCrypto::BLOCK_SIZE];
@@ -299,6 +315,8 @@ private:
 
 uint32_t ParquetCrypto::Read(TBase &object, TProtocol &iprot, const string &key,
                              const EncryptionUtil &encryption_util_p) {
+	// Original implementation retained for reference.
+	/*
 	TCompactProtocolFactoryT<DecryptionTransport> tproto_factory;
 	auto dprot =
 	    tproto_factory.getProtocol(duckdb_base_std::make_shared<DecryptionTransport>(iprot, key, encryption_util_p));
@@ -312,6 +330,37 @@ uint32_t ParquetCrypto::Read(TBase &object, TProtocol &iprot, const string &key,
 
 	// Read the object
 	object.read(simple_prot.get());
+
+	return ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + all.GetSize() + ParquetCrypto::TAG_BYTES;
+	*/
+	// Modified: call the compute-aware overload and discard compute timing here.
+	return Read(object, iprot, key, encryption_util_p, nullptr);
+}
+
+/**
+ * Decrypt and read a Thrift object while optionally reporting compute-only decryption time.
+ * Modified: compute time excludes transport reads and only covers AES/GCM work.
+ */
+uint32_t ParquetCrypto::Read(TBase &object, TProtocol &iprot, const string &key,
+                             const EncryptionUtil &encryption_util_p, uint64_t *decrypt_compute_ns) {
+	TCompactProtocolFactoryT<DecryptionTransport> tproto_factory;
+	auto dprot =
+	    tproto_factory.getProtocol(duckdb_base_std::make_shared<DecryptionTransport>(iprot, key, encryption_util_p));
+	auto &dtrans = reinterpret_cast<DecryptionTransport &>(*dprot->getTransport());
+
+	// We have to read the whole thing otherwise thrift throws an error before we realize we're decryption is wrong.
+	auto all = dtrans.ReadAll();
+	TCompactProtocolFactoryT<SimpleReadTransport> tsimple_proto_factory;
+	auto simple_prot =
+	    tsimple_proto_factory.getProtocol(duckdb_base_std::make_shared<SimpleReadTransport>(all.get(), all.GetSize()));
+
+	// Read the object
+	object.read(simple_prot.get());
+
+	if (decrypt_compute_ns) {
+		// Report AES/GCM compute time only; transport reads are excluded.
+		*decrypt_compute_ns = dtrans.GetDecryptComputeNs();
+	}
 
 	return ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + all.GetSize() + ParquetCrypto::TAG_BYTES;
 }
@@ -333,6 +382,8 @@ uint32_t ParquetCrypto::Write(const TBase &object, TProtocol &oprot, const strin
 
 uint32_t ParquetCrypto::ReadData(TProtocol &iprot, const data_ptr_t buffer, const uint32_t buffer_size,
                                  const string &key, const EncryptionUtil &encryption_util_p) {
+	// Original implementation retained for reference.
+	/*
 	// Create decryption protocol
 	TCompactProtocolFactoryT<DecryptionTransport> tproto_factory;
 	auto dprot =
@@ -344,6 +395,36 @@ uint32_t ParquetCrypto::ReadData(TProtocol &iprot, const data_ptr_t buffer, cons
 
 	// Verify AES tag and read length
 	return dtrans.Finalize();
+	*/
+	// Modified: call the compute-aware overload and discard compute timing here.
+	return ReadData(iprot, buffer, buffer_size, key, encryption_util_p, nullptr);
+}
+
+/**
+ * Decrypt and read a buffer while optionally reporting compute-only decryption time.
+ * Modified: compute time excludes transport reads and only covers AES/GCM work.
+ */
+uint32_t ParquetCrypto::ReadData(TProtocol &iprot, const data_ptr_t buffer, const uint32_t buffer_size,
+                                 const string &key, const EncryptionUtil &encryption_util_p,
+                                 uint64_t *decrypt_compute_ns) {
+	// Create decryption protocol
+	TCompactProtocolFactoryT<DecryptionTransport> tproto_factory;
+	auto dprot =
+	    tproto_factory.getProtocol(duckdb_base_std::make_shared<DecryptionTransport>(iprot, key, encryption_util_p));
+	auto &dtrans = reinterpret_cast<DecryptionTransport &>(*dprot->getTransport());
+
+	// Read buffer
+	dtrans.read(buffer, buffer_size);
+
+	// Verify AES tag and read length
+	const auto bytes = dtrans.Finalize();
+
+	if (decrypt_compute_ns) {
+		// Report AES/GCM compute time only; transport reads are excluded.
+		*decrypt_compute_ns = dtrans.GetDecryptComputeNs();
+	}
+
+	return bytes;
 }
 
 uint32_t ParquetCrypto::WriteData(TProtocol &oprot, const const_data_ptr_t buffer, const uint32_t buffer_size,

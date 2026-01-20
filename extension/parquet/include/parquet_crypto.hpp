@@ -69,14 +69,26 @@ public:
 	static constexpr idx_t BLOCK_SIZE = 16;
 
 public:
-	//! Decrypt and read a Thrift object from the transport protocol
+	//! Decrypt and read a Thrift object from the transport protocol (does not report compute-only timing).
 	static uint32_t Read(TBase &object, TProtocol &iprot, const string &key, const EncryptionUtil &encryption_util_p);
+	/**
+	 * Decrypt and read a Thrift object while optionally reporting compute-only decryption time.
+	 * Modified: when decrypt_compute_ns is provided, it captures AES/GCM compute time only (excludes transport reads).
+	 */
+	static uint32_t Read(TBase &object, TProtocol &iprot, const string &key, const EncryptionUtil &encryption_util_p,
+	                     uint64_t *decrypt_compute_ns);
 	//! Encrypt and write a Thrift object to the transport protocol
 	static uint32_t Write(const TBase &object, TProtocol &oprot, const string &key,
 	                      const EncryptionUtil &encryption_util_p);
-	//! Decrypt and read a buffer
+	//! Decrypt and read a buffer (does not report compute-only timing).
 	static uint32_t ReadData(TProtocol &iprot, const data_ptr_t buffer, const uint32_t buffer_size, const string &key,
 	                         const EncryptionUtil &encryption_util_p);
+	/**
+	 * Decrypt and read a buffer while optionally reporting compute-only decryption time.
+	 * Modified: when decrypt_compute_ns is provided, it captures AES/GCM compute time only (excludes transport reads).
+	 */
+	static uint32_t ReadData(TProtocol &iprot, const data_ptr_t buffer, const uint32_t buffer_size, const string &key,
+	                         const EncryptionUtil &encryption_util_p, uint64_t *decrypt_compute_ns);
 	//! Encrypt and write a buffer to a file
 	static uint32_t WriteData(TProtocol &oprot, const const_data_ptr_t buffer, const uint32_t buffer_size,
 	                          const string &key, const EncryptionUtil &encryption_util_p);
