@@ -59,6 +59,7 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::MULTI_FILE_MAX_THREADS,
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	        MetricsType::DDS_PREAD_LATENCY,
+	        MetricsType::DDS_PREAD_CALL_COUNT,
 	        MetricsType::DDS_PREAD_MIN_LATENCY,
 	        MetricsType::DDS_PREAD_MAX_LATENCY,
 	        MetricsType::DDS_PREAD_P99_LATENCY,
@@ -127,6 +128,9 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE:
 		case MetricsType::TOTAL_BYTES_READ:
 		case MetricsType::TOTAL_BYTES_WRITTEN:
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+		case MetricsType::DDS_PREAD_CALL_COUNT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
 		case MetricsType::PARQUET_DECRYPTION_COUNT:
 			metrics[metric] = Value::CreateValue<uint64_t>(0);
@@ -270,6 +274,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE:
 		case MetricsType::TOTAL_BYTES_READ:
 		case MetricsType::TOTAL_BYTES_WRITTEN:
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+		case MetricsType::DDS_PREAD_CALL_COUNT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
 		case MetricsType::PARQUET_DECRYPTION_COUNT: {
 			yyjson_mut_obj_add_uint(doc, dest, key_ptr, metrics[metric].GetValue<uint64_t>());

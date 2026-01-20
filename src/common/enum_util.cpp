@@ -2752,6 +2752,7 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
 		{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_LATENCY), "DDS_PREAD_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_CALL_COUNT), "DDS_PREAD_CALL_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MIN_LATENCY), "DDS_PREAD_MIN_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MAX_LATENCY), "DDS_PREAD_MAX_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_P99_LATENCY), "DDS_PREAD_P99_LATENCY" },
@@ -2805,14 +2806,18 @@ template<>
 const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// Original count (62) kept for reference; updated for new DDS pread tail metrics.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 62, "MetricsType", static_cast<uint32_t>(value));
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (65) kept for reference; DDS_PREAD_CALL_COUNT adds one more.
+	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
 MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// Original count (62) kept for reference; updated for new DDS pread tail metrics.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 62, "MetricsType", value));
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
+	// Updated count (65) kept for reference; DDS_PREAD_CALL_COUNT adds one more.
+	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

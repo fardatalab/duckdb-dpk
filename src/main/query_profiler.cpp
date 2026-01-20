@@ -316,6 +316,10 @@ void QueryProfiler::EndQuery() {
 				}
 				info.metrics[MetricsType::DDS_PREAD_LATENCY] = Value::DOUBLE(latency_seconds);
 			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_CALL_COUNT)) {
+				info.metrics[MetricsType::DDS_PREAD_CALL_COUNT] =
+				    Value::UBIGINT(query_metrics.dds_pread_call_count.load());
+			}
 			const bool need_tail_latency =
 			    info.Enabled(settings, MetricsType::DDS_PREAD_MIN_LATENCY) ||
 			    info.Enabled(settings, MetricsType::DDS_PREAD_MAX_LATENCY) ||
@@ -355,6 +359,13 @@ void QueryProfiler::EndQuery() {
 				}
 				if (!combined_latencies.empty()) {
 					auto p99_index = static_cast<idx_t>((combined_latencies.size() - 1) * 99 / 100);
+					auto p50_index = static_cast<idx_t>((combined_latencies.size() - 1) * 50 / 100);
+					double p50_latency_seconds = static_cast<double>(combined_latencies[p50_index]) * 1e-9;
+					printf("[DDS-IO] latency p50=%.6f seconds\n", p50_latency_seconds);
+					// also print the number of preads in total
+					printf("[DDS-IO] total DDSPosix::pread calls=%llu\n",
+					       static_cast<unsigned long long>(query_metrics.dds_pread_call_count.load()));
+
 					std::nth_element(combined_latencies.begin(),
 					                 combined_latencies.begin() + NumericCast<idx_t>(p99_index),
 					                 combined_latencies.end());
