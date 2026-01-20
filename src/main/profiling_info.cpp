@@ -59,8 +59,11 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::MULTI_FILE_MAX_THREADS,
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	        MetricsType::DDS_PREAD_LATENCY,
-		        MetricsType::DDS_PREAD_THREAD_THROUGHPUT,
-		        MetricsType::DDS_PREAD_TOTAL_THROUGHPUT,
+	        MetricsType::DDS_PREAD_MIN_LATENCY,
+	        MetricsType::DDS_PREAD_MAX_LATENCY,
+	        MetricsType::DDS_PREAD_P99_LATENCY,
+	        MetricsType::DDS_PREAD_THREAD_THROUGHPUT,
+	        MetricsType::DDS_PREAD_TOTAL_THROUGHPUT,
 #endif
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
@@ -98,6 +101,9 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_LATENCY:
+		case MetricsType::DDS_PREAD_MIN_LATENCY:
+		case MetricsType::DDS_PREAD_MAX_LATENCY:
+		case MetricsType::DDS_PREAD_P99_LATENCY:
 		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 #endif
@@ -239,6 +245,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_LATENCY:
+		case MetricsType::DDS_PREAD_MIN_LATENCY:
+		case MetricsType::DDS_PREAD_MAX_LATENCY:
+		case MetricsType::DDS_PREAD_P99_LATENCY:
 		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 #endif

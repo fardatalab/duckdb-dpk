@@ -246,6 +246,9 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::PARQUET_DECRYPTION_COUNT:
         case MetricsType::MULTI_FILE_MAX_THREADS:
         case MetricsType::DDS_PREAD_LATENCY:
+        case MetricsType::DDS_PREAD_MIN_LATENCY:
+        case MetricsType::DDS_PREAD_MAX_LATENCY:
+        case MetricsType::DDS_PREAD_P99_LATENCY:
         case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
         case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
             return true;

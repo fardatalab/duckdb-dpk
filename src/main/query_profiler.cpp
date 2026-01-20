@@ -27,6 +27,15 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
 
+namespace {
+// Reserve a large per-thread buffer to minimize per-call allocations for tail latency tracking.
+static constexpr idx_t DDS_PREAD_LATENCY_RESERVE_BYTES = 128ULL * 1024ULL * 1024ULL;
+static constexpr idx_t DDS_PREAD_LATENCY_RESERVE_COUNT =
+    DDS_PREAD_LATENCY_RESERVE_BYTES / static_cast<idx_t>(sizeof(uint64_t));
+// Number of per-thread latency buffer slots to track at most per query.
+static constexpr idx_t DDS_PREAD_LATENCY_BUFFER_SLOTS = 4096;
+} // namespace
+
 QueryProfiler::QueryProfiler(ClientContext &context_p)
     : context(context_p), running(false), query_requires_profiling(false), is_explain_analyze(false) {
 }
@@ -122,9 +131,18 @@ void QueryProfiler::Reset() {
 	query_metrics.dds_pread_wall_end_ns = 0;
 	// DDS pread metrics are optional and can be compile-time disabled.
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
-	{
-		lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
-		dds_pread_thread_stats.clear();
+	// Original per-thread stats reset (mutex-based); kept for reference.
+	// {
+	// 	lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+	// 	dds_pread_thread_stats.clear();
+	// }
+	// Reset lock-free per-thread latency buffers for the new query.
+	dds_pread_latency_generation.fetch_add(1);
+	dds_pread_latency_buffer_count.store(0);
+	if (dds_pread_latency_buffers.empty()) {
+		dds_pread_latency_buffers.resize(DDS_PREAD_LATENCY_BUFFER_SLOTS, nullptr);
+	} else {
+		std::fill(dds_pread_latency_buffers.begin(), dds_pread_latency_buffers.end(), nullptr);
 	}
 #endif
 }
@@ -298,6 +316,62 @@ void QueryProfiler::EndQuery() {
 				}
 				info.metrics[MetricsType::DDS_PREAD_LATENCY] = Value::DOUBLE(latency_seconds);
 			}
+			const bool need_tail_latency =
+			    info.Enabled(settings, MetricsType::DDS_PREAD_MIN_LATENCY) ||
+			    info.Enabled(settings, MetricsType::DDS_PREAD_MAX_LATENCY) ||
+			    info.Enabled(settings, MetricsType::DDS_PREAD_P99_LATENCY) ||
+			    (query_metrics.dds_pread_call_count.load() > 0);
+			double min_latency_seconds = 0.0;
+			double max_latency_seconds = 0.0;
+			double p99_latency_seconds = 0.0;
+			if (need_tail_latency) {
+				uint64_t min_latency_ns = NumericLimits<uint64_t>::Maximum();
+				uint64_t max_latency_ns = 0;
+				idx_t total_latency_count = 0;
+				// Note: only registered buffers (up to DDS_PREAD_LATENCY_BUFFER_SLOTS) are aggregated here.
+				auto buffer_limit = MinValue<idx_t>(dds_pread_latency_buffer_count.load(),
+				                                    dds_pread_latency_buffers.size());
+				for (idx_t idx = 0; idx < buffer_limit; idx++) {
+					auto *buffer = dds_pread_latency_buffers[idx];
+					if (!buffer || buffer->latencies_ns.empty()) {
+						continue;
+					}
+					total_latency_count += buffer->latencies_ns.size();
+				}
+				std::vector<uint64_t> combined_latencies;
+				if (total_latency_count > 0) {
+					combined_latencies.reserve(total_latency_count);
+					for (idx_t idx = 0; idx < buffer_limit; idx++) {
+						auto *buffer = dds_pread_latency_buffers[idx];
+						if (!buffer || buffer->latencies_ns.empty()) {
+							continue;
+						}
+						auto &latencies = buffer->latencies_ns;
+						auto local_minmax = std::minmax_element(latencies.begin(), latencies.end());
+						min_latency_ns = MinValue<uint64_t>(min_latency_ns, *local_minmax.first);
+						max_latency_ns = MaxValue<uint64_t>(max_latency_ns, *local_minmax.second);
+						combined_latencies.insert(combined_latencies.end(), latencies.begin(), latencies.end());
+					}
+				}
+				if (!combined_latencies.empty()) {
+					auto p99_index = static_cast<idx_t>((combined_latencies.size() - 1) * 99 / 100);
+					std::nth_element(combined_latencies.begin(),
+					                 combined_latencies.begin() + NumericCast<idx_t>(p99_index),
+					                 combined_latencies.end());
+					p99_latency_seconds = static_cast<double>(combined_latencies[p99_index]) * 1e-9;
+					min_latency_seconds = static_cast<double>(min_latency_ns) * 1e-9;
+					max_latency_seconds = static_cast<double>(max_latency_ns) * 1e-9;
+				}
+			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_MIN_LATENCY)) {
+				info.metrics[MetricsType::DDS_PREAD_MIN_LATENCY] = Value::DOUBLE(min_latency_seconds);
+			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_MAX_LATENCY)) {
+				info.metrics[MetricsType::DDS_PREAD_MAX_LATENCY] = Value::DOUBLE(max_latency_seconds);
+			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_P99_LATENCY)) {
+				info.metrics[MetricsType::DDS_PREAD_P99_LATENCY] = Value::DOUBLE(p99_latency_seconds);
+			}
 			const bool need_throughput = info.Enabled(settings, MetricsType::DDS_PREAD_THREAD_THROUGHPUT) ||
 			                             info.Enabled(settings, MetricsType::DDS_PREAD_TOTAL_THROUGHPUT);
 			double thread_throughput = 0.0;
@@ -336,18 +410,21 @@ void QueryProfiler::EndQuery() {
 				}
 				double throughput_sum = 0.0;
 				idx_t thread_count = 0;
-				{
-					lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
-					for (auto &entry : dds_pread_thread_stats) {
-						const auto thread_start = entry.second.wall_start_ns;
-						const auto thread_end = entry.second.wall_end_ns;
-						if (thread_start == 0 || thread_end <= thread_start) {
-							continue;
-						}
-						const auto thread_wall_ns = static_cast<double>(thread_end - thread_start);
-						throughput_sum += static_cast<double>(entry.second.bytes) / thread_wall_ns * 1e9;
-						thread_count++;
+				auto buffer_limit = MinValue<idx_t>(dds_pread_latency_buffer_count.load(),
+				                                    dds_pread_latency_buffers.size());
+				for (idx_t idx = 0; idx < buffer_limit; idx++) {
+					auto *buffer = dds_pread_latency_buffers[idx];
+					if (!buffer) {
+						continue;
 					}
+					const auto thread_start = buffer->wall_start_ns;
+					const auto thread_end = buffer->wall_end_ns;
+					if (thread_start == 0 || thread_end <= thread_start) {
+						continue;
+					}
+					const auto thread_wall_ns = static_cast<double>(thread_end - thread_start);
+					throughput_sum += static_cast<double>(buffer->bytes) / thread_wall_ns * 1e9;
+					thread_count++;
 				}
 				if (thread_count > 0) {
 					thread_throughput = throughput_sum / static_cast<double>(thread_count);
@@ -361,6 +438,8 @@ void QueryProfiler::EndQuery() {
 			}
 			// Emit a debug print for the max concurrent DDS pread threads when DDS pread was used.
 			if (query_metrics.dds_pread_call_count.load() > 0) {
+				printf("[DDS-IO] latency min=%.6f max=%.6f p99=%.6f (seconds)\n", min_latency_seconds,
+				       max_latency_seconds, p99_latency_seconds);
 				printf("[DDS-IO] max concurrent DDSPosix::pread threads=%llu\n",
 				       static_cast<unsigned long long>(query_metrics.dds_pread_max_in_flight.load()));
 			}
@@ -482,15 +561,58 @@ void QueryProfiler::AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes,
 		query_metrics.dds_pread_wall_end_ns.compare_exchange_weak(current_end, wall_end_ns);
 	}
 
-	lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
-	auto &stats = dds_pread_thread_stats[std::this_thread::get_id()];
-	stats.bytes += bytes;
-	stats.time_ns += elapsed_ns;
-	if (stats.wall_start_ns == 0 || wall_start_ns < stats.wall_start_ns) {
-		stats.wall_start_ns = wall_start_ns;
+	// Original per-thread map update (mutex-based); kept for reference.
+	// lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+	// auto &stats = dds_pread_thread_stats[std::this_thread::get_id()];
+	// stats.bytes += bytes;
+	// stats.time_ns += elapsed_ns;
+	// if (stats.wall_start_ns == 0 || wall_start_ns < stats.wall_start_ns) {
+	// 	stats.wall_start_ns = wall_start_ns;
+	// }
+	// if (wall_end_ns > stats.wall_end_ns) {
+	// 	stats.wall_end_ns = wall_end_ns;
+	// }
+
+	// Lock-free per-thread buffer update for tail latency and throughput.
+	struct DDSPosixPreadThreadLocalState {
+		explicit DDSPosixPreadThreadLocalState(idx_t reserve_count)
+		    : buffer(reserve_count), generation(0), registered(false), registered_in_global_list(false) {
+		}
+		QueryProfiler::DDSPosixPreadLatencyBuffer buffer;
+		uint64_t generation;
+		bool registered;
+		bool registered_in_global_list;
+	};
+	static thread_local DDSPosixPreadThreadLocalState local_state(DDS_PREAD_LATENCY_RESERVE_COUNT);
+	const auto current_generation = dds_pread_latency_generation.load();
+	if (local_state.generation != current_generation) {
+		// New query: reset thread-local buffer without reallocating the backing store.
+		local_state.buffer.Reset();
+		local_state.generation = current_generation;
+		local_state.registered = false;
+		local_state.registered_in_global_list = false;
 	}
-	if (wall_end_ns > stats.wall_end_ns) {
-		stats.wall_end_ns = wall_end_ns;
+	if (!local_state.registered) {
+		// Register this thread's buffer once per query using a lock-free slot assignment.
+		const auto slot = dds_pread_latency_buffer_count.fetch_add(1);
+		if (slot < dds_pread_latency_buffers.size()) {
+			dds_pread_latency_buffers[slot] = &local_state.buffer;
+			local_state.registered_in_global_list = true;
+		} else {
+			// If we run out of slots, keep collecting locally but skip global aggregation.
+			local_state.registered_in_global_list = false;
+		}
+		local_state.registered = true;
+	}
+	// Always record the latency sample locally; aggregation happens at EndQuery.
+	local_state.buffer.latencies_ns.push_back(elapsed_ns);
+	local_state.buffer.bytes += bytes;
+	local_state.buffer.time_ns += elapsed_ns;
+	if (local_state.buffer.wall_start_ns == 0 || wall_start_ns < local_state.buffer.wall_start_ns) {
+		local_state.buffer.wall_start_ns = wall_start_ns;
+	}
+	if (wall_end_ns > local_state.buffer.wall_end_ns) {
+		local_state.buffer.wall_end_ns = wall_end_ns;
 	}
 #else
 	(void)elapsed_ns;

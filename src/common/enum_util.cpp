@@ -2752,6 +2752,9 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
 		{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_LATENCY), "DDS_PREAD_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MIN_LATENCY), "DDS_PREAD_MIN_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MAX_LATENCY), "DDS_PREAD_MAX_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_P99_LATENCY), "DDS_PREAD_P99_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_THREAD_THROUGHPUT), "DDS_PREAD_THREAD_THROUGHPUT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_TOTAL_THROUGHPUT), "DDS_PREAD_TOTAL_THROUGHPUT" },
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_TIME), "PARQUET_DECOMPRESSION_TIME" },
@@ -2800,12 +2803,16 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 62, "MetricsType", static_cast<uint32_t>(value));
+	// Original count (62) kept for reference; updated for new DDS pread tail metrics.
+	// return StringUtil::EnumToString(GetMetricsTypeValues(), 62, "MetricsType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
 MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 62, "MetricsType", value));
+	// Original count (62) kept for reference; updated for new DDS pread tail metrics.
+	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 62, "MetricsType", value));
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

@@ -663,6 +663,7 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
  * Reads from a fixed offset, routing Parquet paths through DDS when enabled.
  * Adds DDS/POSIX debug prints and DDS pread alignment statistics at the swap points.
  * DDS pread latency/throughput/concurrency metrics are compile-time gated by DUCKDB_DDS_PREAD_METRICS_ENABLED.
+ * Modified: per-call latency samples are recorded into per-thread buffers for min/max/p99 tail metrics.
  */
 void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	auto bytes_to_read = nr_bytes;

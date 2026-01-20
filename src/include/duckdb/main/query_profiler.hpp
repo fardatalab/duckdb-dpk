@@ -183,6 +183,7 @@ public:
 	DUCKDB_API void Start(const string &query);
 	//! Reset per-query state and metric counters before a new query starts.
 	//! DDS pread thread stats are reset only when DUCKDB_DDS_PREAD_METRICS_ENABLED is enabled.
+	//! Modified: DDS pread lock-free per-thread latency buffers are reset on each query as well.
 	DUCKDB_API void Reset();
 	DUCKDB_API void StartQuery(const string &query, bool is_explain_analyze = false, bool start_at_optimizer = false);
 	//! Finalize profiling metrics and emit output when profiling is enabled.
@@ -199,6 +200,7 @@ public:
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
 	//! Adds a DDSPosix::pread timing and byte count for query throughput metrics.
 	//! Adds a DDSPosix::pread timing and byte count plus wall clock timing for query throughput metrics.
+	//! Modified: records per-call latency samples in a lock-free, per-thread buffer for tail metrics (min/max/p99).
 	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
 	                                        uint64_t wall_end_ns);
@@ -284,15 +286,42 @@ private:
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
 
-	//! DDSPosix::pread-specific thread-level statistics.
-	struct DDSThreadStats {
+	//! DDSPosix::pread-specific thread-level statistics (legacy; kept for reference).
+	// struct DDSThreadStats {
+	// 	uint64_t bytes = 0;
+	// 	uint64_t time_ns = 0;
+	// 	uint64_t wall_start_ns = 0;
+	// 	uint64_t wall_end_ns = 0;
+	// };
+	// unordered_map<std::thread::id, DDSThreadStats, std::hash<std::thread::id>> dds_pread_thread_stats;
+	// std::mutex dds_pread_thread_stats_mutex;
+
+	//! DDSPosix::pread latency storage without per-call mutexes.
+	//! Each thread writes to its own buffer and registers it once per query.
+	struct DDSPosixPreadLatencyBuffer {
+		explicit DDSPosixPreadLatencyBuffer(idx_t reserve_count) {
+			// Reserve a large per-thread buffer up-front to avoid per-call reallocations.
+			latencies_ns.reserve(reserve_count);
+		}
+		void Reset() {
+			latencies_ns.clear();
+			bytes = 0;
+			time_ns = 0;
+			wall_start_ns = 0;
+			wall_end_ns = 0;
+		}
+		vector<uint64_t> latencies_ns;
 		uint64_t bytes = 0;
 		uint64_t time_ns = 0;
 		uint64_t wall_start_ns = 0;
 		uint64_t wall_end_ns = 0;
 	};
-	unordered_map<std::thread::id, DDSThreadStats, std::hash<std::thread::id>> dds_pread_thread_stats;
-	std::mutex dds_pread_thread_stats_mutex;
+	//! Global registry of per-thread latency buffers for tail metric aggregation.
+	vector<DDSPosixPreadLatencyBuffer *> dds_pread_latency_buffers;
+	//! Number of registered per-thread buffers for the current query.
+	atomic<idx_t> dds_pread_latency_buffer_count {0};
+	//! Generation counter used to reset thread-local buffers between queries.
+	atomic<uint64_t> dds_pread_latency_generation {0};
 
 public:
 	const TreeMap &GetTreeMap() const {
