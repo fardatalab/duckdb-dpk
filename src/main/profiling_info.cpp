@@ -54,8 +54,12 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::RESULT_SET_SIZE,
 	        MetricsType::LATENCY,
 	        MetricsType::ROWS_RETURNED,
-	        MetricsType::TOTAL_BYTES_READ,
-	        MetricsType::TOTAL_BYTES_WRITTEN,
+        MetricsType::TOTAL_BYTES_READ,
+        MetricsType::TOTAL_BYTES_WRITTEN,
+        MetricsType::MULTI_FILE_MAX_THREADS,
+        MetricsType::DDS_PREAD_LATENCY,
+	        MetricsType::DDS_PREAD_THREAD_THROUGHPUT,
+	        MetricsType::DDS_PREAD_TOTAL_THROUGHPUT,
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
@@ -83,12 +87,16 @@ void ProfilingInfo::ResetMetrics() {
 
 		switch (metric) {
 		case MetricsType::QUERY_NAME:
+		case MetricsType::MULTI_FILE_MAX_THREADS:
 			metrics[metric] = Value::CreateValue("");
 			break;
 		case MetricsType::LATENCY:
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::DDS_PREAD_LATENCY:
+		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
+		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
@@ -218,12 +226,16 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		switch (metric) {
 		case MetricsType::QUERY_NAME:
 		case MetricsType::OPERATOR_NAME:
+		case MetricsType::MULTI_FILE_MAX_THREADS:
 			yyjson_mut_obj_add_strcpy(doc, dest, key_ptr, metrics[metric].GetValue<string>().c_str());
 			break;
 		case MetricsType::LATENCY:
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+		case MetricsType::DDS_PREAD_LATENCY:
+		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
+		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());

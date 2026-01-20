@@ -366,3 +366,5 @@ tools/pythonpkg/duckdb_build/
 tpch_parquet_encrypted/*.parquet
 tpch_profiles/*.json
 tpch_profiles/*.csv
+tpch_parquet_test/*.parquet
+tpch_test*

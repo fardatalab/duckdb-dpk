@@ -89,6 +89,10 @@ public:
 	DUCKDB_API FileType GetType();
 
 	DUCKDB_API void TryAddLogger(FileOpener &opener);
+	//! Temporarily associate a client context to the handle for instrumentation.
+	void SetQueryContext(optional_ptr<ClientContext> context);
+	//! Retrieve the client context previously attached for this call.
+	optional_ptr<ClientContext> GetQueryContext() const;
 
 	//! Closes the file handle.
 	DUCKDB_API virtual void Close() = 0;
@@ -118,6 +122,7 @@ public:
 	FileOpenFlags flags;
 
 	shared_ptr<Logger> logger;
+	optional_ptr<ClientContext> query_context;
 };
 
 class FileSystem {

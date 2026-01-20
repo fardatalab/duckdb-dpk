@@ -18,6 +18,9 @@
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <mutex>
+#include <thread>
 #include <utility>
 
 using namespace duckdb_yyjson; // NOLINT
@@ -110,6 +113,17 @@ void QueryProfiler::Reset() {
 	query_metrics.parquet_decrypt_call_count = 0;
 	query_metrics.parquet_decompress_time_ns = 0;
 	query_metrics.parquet_decompress_call_count = 0;
+	query_metrics.dds_pread_time_ns = 0;
+	query_metrics.dds_pread_bytes = 0;
+	query_metrics.dds_pread_call_count = 0;
+	query_metrics.dds_pread_in_flight = 0;
+	query_metrics.dds_pread_max_in_flight = 0;
+	query_metrics.dds_pread_wall_start_ns = 0;
+	query_metrics.dds_pread_wall_end_ns = 0;
+	{
+		lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+		dds_pread_thread_stats.clear();
+	}
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -270,6 +284,58 @@ void QueryProfiler::EndQuery() {
 			if (info.Enabled(settings, MetricsType::TOTAL_BYTES_WRITTEN)) {
 				info.metrics[MetricsType::TOTAL_BYTES_WRITTEN] = Value::UBIGINT(query_metrics.total_bytes_written);
 			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_LATENCY)) {
+				double latency_seconds = 0.0;
+				const auto call_count = query_metrics.dds_pread_call_count.load();
+				if (call_count != 0) {
+					latency_seconds = static_cast<double>(query_metrics.dds_pread_time_ns.load()) * 1e-9 /
+					                  static_cast<double>(call_count);
+				}
+				info.metrics[MetricsType::DDS_PREAD_LATENCY] = Value::DOUBLE(latency_seconds);
+			}
+			const bool need_throughput = info.Enabled(settings, MetricsType::DDS_PREAD_THREAD_THROUGHPUT) ||
+			                             info.Enabled(settings, MetricsType::DDS_PREAD_TOTAL_THROUGHPUT);
+			double thread_throughput = 0.0;
+			double aggregate_throughput = 0.0;
+			if (need_throughput) {
+				// throughput calculation uses wall clock time.
+				const auto total_bytes = static_cast<double>(query_metrics.dds_pread_bytes.load());
+				const auto wall_start = query_metrics.dds_pread_wall_start_ns.load();
+				const auto wall_end = query_metrics.dds_pread_wall_end_ns.load();
+				if (wall_start != 0 && wall_end > wall_start) {
+					const auto total_wall_ns = static_cast<double>(wall_end - wall_start);
+					aggregate_throughput = total_bytes / total_wall_ns * 1e9;
+				}
+				double throughput_sum = 0.0;
+				idx_t thread_count = 0;
+				{
+					lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+					for (auto &entry : dds_pread_thread_stats) {
+						const auto thread_start = entry.second.wall_start_ns;
+						const auto thread_end = entry.second.wall_end_ns;
+						if (thread_start == 0 || thread_end <= thread_start) {
+							continue;
+						}
+						const auto thread_wall_ns = static_cast<double>(thread_end - thread_start);
+						throughput_sum += static_cast<double>(entry.second.bytes) / thread_wall_ns * 1e9;
+						thread_count++;
+					}
+				}
+				if (thread_count > 0) {
+					thread_throughput = throughput_sum / static_cast<double>(thread_count);
+				}
+			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_THREAD_THROUGHPUT)) {
+				info.metrics[MetricsType::DDS_PREAD_THREAD_THROUGHPUT] = Value::DOUBLE(thread_throughput);
+			}
+			if (info.Enabled(settings, MetricsType::DDS_PREAD_TOTAL_THROUGHPUT)) {
+				info.metrics[MetricsType::DDS_PREAD_TOTAL_THROUGHPUT] = Value::DOUBLE(aggregate_throughput);
+			}
+			// Emit a debug print for the max concurrent DDS pread threads when DDS pread was used.
+			if (query_metrics.dds_pread_call_count.load() > 0) {
+				printf("[DDS-IO] max concurrent DDSPosix::pread threads=%llu\n",
+				       static_cast<unsigned long long>(query_metrics.dds_pread_max_in_flight.load()));
+			}
 			// Added parquet crypto/codec metrics to the query-global output.
 			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_TIME)) {
 				info.metrics[MetricsType::PARQUET_DECRYPTION_TIME] =
@@ -359,6 +425,70 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 		query_metrics.parquet_decompress_time_ns += elapsed_ns;
 		query_metrics.parquet_decompress_call_count++;
 	}
+}
+
+// Aggregates DDSPosix pread timing/byte metrics for the current query.
+void QueryProfiler::AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
+                                            uint64_t wall_end_ns) {
+	if (!IsEnabled()) {
+		return;
+	}
+	// Previous implementation used only elapsed time/bytes, which is still needed for latency.
+	// query_metrics.dds_pread_time_ns += elapsed_ns;
+	// query_metrics.dds_pread_bytes += bytes;
+	// query_metrics.dds_pread_call_count++;
+	query_metrics.dds_pread_time_ns += elapsed_ns;
+	query_metrics.dds_pread_bytes += bytes;
+	query_metrics.dds_pread_call_count++;
+
+	// Track wall clock window for the full query.
+	auto current_start = query_metrics.dds_pread_wall_start_ns.load();
+	if (current_start == 0 || wall_start_ns < current_start) {
+		query_metrics.dds_pread_wall_start_ns.compare_exchange_weak(current_start, wall_start_ns);
+	}
+	auto current_end = query_metrics.dds_pread_wall_end_ns.load();
+	if (wall_end_ns > current_end) {
+		query_metrics.dds_pread_wall_end_ns.compare_exchange_weak(current_end, wall_end_ns);
+	}
+
+	lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+	auto &stats = dds_pread_thread_stats[std::this_thread::get_id()];
+	stats.bytes += bytes;
+	stats.time_ns += elapsed_ns;
+	if (stats.wall_start_ns == 0 || wall_start_ns < stats.wall_start_ns) {
+		stats.wall_start_ns = wall_start_ns;
+	}
+	if (wall_end_ns > stats.wall_end_ns) {
+		stats.wall_end_ns = wall_end_ns;
+	}
+}
+
+// Store a query-global profiling metric for later emission.
+void QueryProfiler::SetQueryGlobalMetric(MetricsType metric, Value value) {
+	if (!IsEnabled()) {
+		return;
+	}
+	lock_guard<std::mutex> guard(lock);
+	query_metrics.query_global_info.metrics[metric] = std::move(value);
+}
+
+// Tracks an in-flight DDSPosix::pread call so we can compute max concurrency.
+void QueryProfiler::BeginDDSPosixPread() {
+	if (!IsEnabled()) {
+		return;
+	}
+	const auto current = query_metrics.dds_pread_in_flight.fetch_add(1) + 1;
+	auto max_seen = query_metrics.dds_pread_max_in_flight.load();
+	while (current > max_seen && !query_metrics.dds_pread_max_in_flight.compare_exchange_weak(max_seen, current)) {
+	}
+}
+
+// Marks the end of an in-flight DDSPosix::pread call for concurrency tracking.
+void QueryProfiler::EndDDSPosixPread() {
+	if (!IsEnabled()) {
+		return;
+	}
+	query_metrics.dds_pread_in_flight.fetch_sub(1);
 }
 
 string QueryProfiler::ToString(ExplainFormat explain_format) const {

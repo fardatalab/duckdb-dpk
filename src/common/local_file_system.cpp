@@ -9,6 +9,7 @@
 #include "duckdb/common/windows.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/log_manager.hpp"
@@ -19,6 +20,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <chrono>
 
 // DDS POSIX debug print macro.
 // To enable these prints when DUCKDB_USE_DDS_POSIX is enabled, define DUCKDB_DDS_DEBUG_PRINT_ENABLED=1 at compile time.
@@ -665,6 +667,7 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 	auto bytes_to_read = nr_bytes;
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto read_buffer = char_ptr_cast(buffer);
+	auto client_context = handle.GetQueryContext();
 	while (nr_bytes > 0) {
 		int64_t bytes_read;
 #ifdef DUCKDB_USE_DDS_POSIX
@@ -673,11 +676,44 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pread DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
 			                       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
 			DDSPosixDebugRecordPread(UnsafeNumericCast<uint64_t>(nr_bytes), UnsafeNumericCast<uint64_t>(location));
+			// Track in-flight DDS pread calls so we can report max concurrent threads per query.
+			struct DDSPosixPreadConcurrencyScope {
+				explicit DDSPosixPreadConcurrencyScope(optional_ptr<ClientContext> context_p)
+				    : context(context_p), active(false) {
+					if (context) {
+						QueryProfiler::Get(*context).BeginDDSPosixPread();
+						active = true;
+					}
+				}
+				~DDSPosixPreadConcurrencyScope() {
+					if (active) {
+						QueryProfiler::Get(*context).EndDDSPosixPread();
+					}
+				}
+				optional_ptr<ClientContext> context;
+				bool active;
+			};
+			DDSPosixPreadConcurrencyScope concurrency_scope(client_context);
+			const auto start = std::chrono::steady_clock::now();
 			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
 			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
 			//                                                          UnsafeNumericCast<off_t>(location));
 			bytes_read = DDSPosix::pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes),
 			                             UnsafeNumericCast<off_t>(location));
+			const auto end = std::chrono::steady_clock::now();
+			const auto elapsed_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+			const auto wall_start_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
+			const auto wall_end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count();
+			if (client_context && bytes_read > 0) {
+				// Previous implementation used elapsed time only.
+				// QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
+				//     NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read));
+				QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
+				    NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
+				    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
+			}
 		} else
 #endif
 		{
@@ -692,13 +728,14 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			bytes_read = pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
 		}
 		if (bytes_read == -1) {
-			throw IOException("Could not read from file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
-			                  strerror(errno));
+			throw IOException("Could not DDS pread from file with offset %llu, size=%lld \"%s\": %s",
+							  {{"errno", std::to_string(errno)}}, static_cast<unsigned long long>(location),
+							  static_cast<long long>(nr_bytes), handle.path, strerror(errno));
 		}
 		if (bytes_read == 0) {
 			throw IOException(
-			    "Could not read enough bytes from file \"%s\": attempted to read %llu bytes from location %llu",
-			    handle.path, nr_bytes, location);
+			    "Could not read enough bytes from file with offset %llu, \"%s\": attempted to read %llu bytes from location %llu",
+			    location, handle.path, nr_bytes, location);
 		}
 		read_buffer += bytes_read;
 		nr_bytes -= bytes_read;

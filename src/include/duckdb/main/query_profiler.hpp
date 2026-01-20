@@ -25,6 +25,10 @@
 #include "duckdb/main/profiling_node.hpp"
 
 #include <stack>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 
 namespace duckdb {
 
@@ -118,7 +122,9 @@ struct QueryMetrics {
 	//! Initialize query-level counters to zero.
 	QueryMetrics()
 	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
-	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0) {};
+	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), dds_pread_time_ns(0), dds_pread_bytes(0),
+	      dds_pread_call_count(0), dds_pread_in_flight(0), dds_pread_max_in_flight(0),
+	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0) {};
 
 	ProfilingInfo query_global_info;
 
@@ -138,6 +144,20 @@ struct QueryMetrics {
 	atomic<uint64_t> parquet_decompress_time_ns;
 	//! Number of parquet decompression operations in this query
 	atomic<uint64_t> parquet_decompress_call_count;
+	//! Total nanoseconds spent in DDSPosix::pread reads for this query
+	atomic<uint64_t> dds_pread_time_ns;
+	//! Total bytes read via DDSPosix::pread for this query
+	atomic<uint64_t> dds_pread_bytes;
+	//! Number of DDSPosix::pread calls in this query
+	atomic<uint64_t> dds_pread_call_count;
+	//! Number of DDSPosix::pread calls currently in flight
+	atomic<uint64_t> dds_pread_in_flight;
+	//! Maximum number of concurrent DDSPosix::pread calls observed
+	atomic<uint64_t> dds_pread_max_in_flight;
+	//! Wall clock start (steady clock, ns since epoch) for the first DDSPosix::pread in the query
+	atomic<uint64_t> dds_pread_wall_start_ns;
+	//! Wall clock end (steady clock, ns since epoch) for the last DDSPosix::pread in the query
+	atomic<uint64_t> dds_pread_wall_end_ns;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -175,6 +195,16 @@ public:
 	DUCKDB_API void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
 	//! Adds a parquet decompression timing in nanoseconds and increments the call counter.
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
+	//! Adds a DDSPosix::pread timing and byte count for query throughput metrics.
+	//! Adds a DDSPosix::pread timing and byte count plus wall clock timing for query throughput metrics.
+	DUCKDB_API void AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
+	                                        uint64_t wall_end_ns);
+	//! Store a query-global profiling metric for later emission.
+	DUCKDB_API void SetQueryGlobalMetric(MetricsType metric, Value value);
+	//! Marks the start of a DDSPosix::pread call for concurrency tracking.
+	DUCKDB_API void BeginDDSPosixPread();
+	//! Marks the end of a DDSPosix::pread call for concurrency tracking.
+	DUCKDB_API void EndDDSPosixPread();
 
 	DUCKDB_API void StartExplainAnalyze();
 
@@ -248,6 +278,16 @@ private:
 	TreeMap tree_map;
 	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
+
+	//! DDSPosix::pread-specific thread-level statistics.
+	struct DDSThreadStats {
+		uint64_t bytes = 0;
+		uint64_t time_ns = 0;
+		uint64_t wall_start_ns = 0;
+		uint64_t wall_end_ns = 0;
+	};
+	unordered_map<std::thread::id, DDSThreadStats, std::hash<std::thread::id>> dds_pread_thread_stats;
+	std::mutex dds_pread_thread_stats_mutex;
 
 public:
 	const TreeMap &GetTreeMap() const {

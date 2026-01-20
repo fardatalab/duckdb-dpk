@@ -6,6 +6,10 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/dds_posix_debug.hpp"
+#include <cstdio>
+#ifdef DUCKDB_USE_DDS_POSIX
+#include "DDSPosix.h"
+#endif
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -196,6 +200,10 @@ unique_ptr<T> ClientContext::ErrorResult(ErrorData error, const string &query) {
 	return make_uniq<T>(std::move(error));
 }
 
+/**
+ * Begins a query lifecycle by initializing context state and logging.
+ * DDS POSIX initialization is handled right before profiling starts, not here.
+ */
 void ClientContext::BeginQueryInternal(ClientContextLock &lock, const string &query) {
 	// check if we are on AutoCommit. In this case we should start a transaction
 	D_ASSERT(!active_query);
@@ -232,7 +240,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, const string &qu
 
 /**
  * Finalizes query execution, commits or rolls back transactions, and runs end-of-query hooks.
- * Includes DDS POSIX debug stats emission at query end when enabled.
+ * Includes DDS POSIX debug stats emission and DDS shutdown at query end when enabled.
  */
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
@@ -268,9 +276,19 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 		error = ErrorData("Unhandled exception!");
 	} // LCOV_EXCL_STOP
 
+	// Original EndQuery/metrics block (kept for reference).
+	// client_data->profiler->EndQuery();
+	// DDS debug: print and reset DDS pread alignment stats at query end.
+	// DDSPosixDebugPrintAndReset();
+	// Updated: end profiling first, then emit DDS metrics and shutdown DDS.
 	client_data->profiler->EndQuery();
 	// DDS debug: print and reset DDS pread alignment stats at query end.
 	DDSPosixDebugPrintAndReset();
+#ifdef DUCKDB_USE_DDS_POSIX
+	// DDS debug: stop DDS poller and release DDS resources after metrics are finalized.
+	printf("[DDS-IO] Shutting down DDS POSIX at query end\n");
+	DDSPosix::shutdown_posix();
+#endif
 
 	// Refresh the logger
 	logger->Flush();
@@ -907,8 +925,15 @@ unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatemen
 		}
 		return ErrorResult<PendingQueryResult>(std::move(error), query);
 	}
-	// start the profiler
+	// start the profiler (and DDS POSIX if enabled) before latency metrics begin
 	auto &profiler = QueryProfiler::Get(*this);
+	// Original direct StartQuery call (kept for reference).
+	// profiler.StartQuery(query, IsExplainAnalyze(statement ? statement.get() : prepared->unbound_statement.get()));
+#ifdef DUCKDB_USE_DDS_POSIX
+	// DDS debug: initialize DDS before latency measurement begins.
+	printf("[DDS-IO] Initializing DDS POSIX before query profiling starts\n");
+	DDSPosix::initialize_posix("DDSFrontEnd");
+#endif
 	profiler.StartQuery(query, IsExplainAnalyze(statement ? statement.get() : prepared->unbound_statement.get()));
 
 	bool invalidate_query = true;
