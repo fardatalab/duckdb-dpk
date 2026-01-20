@@ -42,6 +42,9 @@ for q_nr in {1..22}; do
 -- Security Setup
 PRAGMA add_parquet_key('$KEY_NAME', '$SECRET_KEY');
 
+-- SET threads to 64
+SET threads TO 64;
+
 -- Profiling Configuration
 SET profiling_output = '$PROFILE_FILE';
 SET profiling_mode = 'detailed';
