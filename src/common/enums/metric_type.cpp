@@ -249,6 +249,7 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::DDS_PREAD_CALL_COUNT:
         case MetricsType::DDS_PREAD_MIN_LATENCY:
         case MetricsType::DDS_PREAD_MAX_LATENCY:
+        case MetricsType::DDS_PREAD_P50_LATENCY:
         case MetricsType::DDS_PREAD_P99_LATENCY:
         case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
         case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:

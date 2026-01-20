@@ -2755,6 +2755,7 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_CALL_COUNT), "DDS_PREAD_CALL_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MIN_LATENCY), "DDS_PREAD_MIN_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MAX_LATENCY), "DDS_PREAD_MAX_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_P50_LATENCY), "DDS_PREAD_P50_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_P99_LATENCY), "DDS_PREAD_P99_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_THREAD_THROUGHPUT), "DDS_PREAD_THREAD_THROUGHPUT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_TOTAL_THROUGHPUT), "DDS_PREAD_TOTAL_THROUGHPUT" },
@@ -2808,7 +2809,9 @@ const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 62, "MetricsType", static_cast<uint32_t>(value));
 	// Updated count (65) kept for reference; DDS_PREAD_CALL_COUNT adds one more.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
+	// return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 67, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
@@ -2817,7 +2820,9 @@ MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 62, "MetricsType", value));
 	// Updated count (65) kept for reference; DDS_PREAD_CALL_COUNT adds one more.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
+	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
+	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 67, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

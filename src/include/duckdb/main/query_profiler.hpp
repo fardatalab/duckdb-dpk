@@ -187,7 +187,8 @@ public:
 	DUCKDB_API void Reset();
 	DUCKDB_API void StartQuery(const string &query, bool is_explain_analyze = false, bool start_at_optimizer = false);
 	//! Finalize profiling metrics and emit output when profiling is enabled.
-	//! DDS pread metrics are emitted only when DUCKDB_DDS_PREAD_METRICS_ENABLED is enabled.
+	//! DDS pread metrics (including call count and tail latencies) are emitted only when
+	//! DUCKDB_DDS_PREAD_METRICS_ENABLED is enabled.
 	DUCKDB_API void EndQuery();
 
 	//! Adds nr_bytes bytes to the total bytes read.
