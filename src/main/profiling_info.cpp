@@ -36,7 +36,7 @@ ProfilingInfo::ProfilingInfo(const profiler_settings_t &n_settings, const idx_t 
 	ResetMetrics();
 }
 
-// Returns the default profiler settings, including parquet crypto/codec metrics.
+// Returns the default profiler settings, including parquet crypto/codec and pread tail metrics (p50/p99).
 profiler_settings_t ProfilingInfo::DefaultSettings() {
 	return {MetricsType::QUERY_NAME,
 	        MetricsType::BLOCKED_THREAD_TIME,
@@ -61,6 +61,7 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::PREAD_LATENCY,
 	        MetricsType::PREAD_MIN_LATENCY,
 	        MetricsType::PREAD_MAX_LATENCY,
+	        MetricsType::PREAD_P50_LATENCY,
 	        MetricsType::PREAD_P99_LATENCY,
 	        MetricsType::PREAD_THREAD_THROUGHPUT,
 	        MetricsType::PREAD_TOTAL_THROUGHPUT,
@@ -81,7 +82,7 @@ profiler_settings_t ProfilingInfo::DefaultOperatorSettings() {
 	        MetricsType::OPERATOR_NAME, MetricsType::OPERATOR_TYPE};
 }
 
-// Initializes enabled metrics with default values based on their expected types.
+// Initializes enabled metrics with default values based on their expected types (including pread p50).
 void ProfilingInfo::ResetMetrics() {
 	metrics.clear();
 	for (auto &metric : expanded_settings) {
@@ -103,6 +104,7 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::PREAD_LATENCY:
 		case MetricsType::PREAD_MIN_LATENCY:
 		case MetricsType::PREAD_MAX_LATENCY:
+		case MetricsType::PREAD_P50_LATENCY:
 		case MetricsType::PREAD_P99_LATENCY:
 		case MetricsType::PREAD_THREAD_THROUGHPUT:
 		case MetricsType::PREAD_TOTAL_THROUGHPUT:
@@ -197,7 +199,7 @@ string ProfilingInfo::GetMetricAsString(const MetricsType metric) const {
 	return metrics.at(metric).ToString();
 }
 
-// Serializes enabled metrics to JSON, including parquet timing and call counters.
+// Serializes enabled metrics to JSON, including parquet timing and pread tail metrics.
 void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest) {
 	for (auto &metric : settings) {
 		auto metric_str = StringUtil::Lower(EnumUtil::ToString(metric));
@@ -247,6 +249,7 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::PREAD_LATENCY:
 		case MetricsType::PREAD_MIN_LATENCY:
 		case MetricsType::PREAD_MAX_LATENCY:
+		case MetricsType::PREAD_P50_LATENCY:
 		case MetricsType::PREAD_P99_LATENCY:
 		case MetricsType::PREAD_THREAD_THROUGHPUT:
 		case MetricsType::PREAD_TOTAL_THROUGHPUT:

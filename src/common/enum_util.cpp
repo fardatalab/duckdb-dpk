@@ -2751,12 +2751,13 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 			{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_READ), "TOTAL_BYTES_READ" },
 			{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
 			{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_LATENCY), "PREAD_LATENCY" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_MIN_LATENCY), "PREAD_MIN_LATENCY" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_MAX_LATENCY), "PREAD_MAX_LATENCY" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_P99_LATENCY), "PREAD_P99_LATENCY" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_THREAD_THROUGHPUT), "PREAD_THREAD_THROUGHPUT" },
-			{ static_cast<uint32_t>(MetricsType::PREAD_TOTAL_THROUGHPUT), "PREAD_TOTAL_THROUGHPUT" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_LATENCY), "PREAD_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_MIN_LATENCY), "PREAD_MIN_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_MAX_LATENCY), "PREAD_MAX_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_P50_LATENCY), "PREAD_P50_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_P99_LATENCY), "PREAD_P99_LATENCY" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_THREAD_THROUGHPUT), "PREAD_THREAD_THROUGHPUT" },
+		{ static_cast<uint32_t>(MetricsType::PREAD_TOTAL_THROUGHPUT), "PREAD_TOTAL_THROUGHPUT" },
 			{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_TIME), "PARQUET_DECOMPRESSION_TIME" },
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_COUNT), "PARQUET_DECOMPRESSION_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_TIME), "PARQUET_DECRYPTION_TIME" },
@@ -2803,12 +2804,16 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
+	// Original count (65) kept for reference; PREAD_P50_LATENCY adds one more.
+	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
 MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
+	// Original count (65) kept for reference; PREAD_P50_LATENCY adds one more.
+	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

@@ -268,7 +268,7 @@ Value GetCumulativeOptimizers(ProfilingNode &node) {
 	return Value::CreateValue(count);
 }
 
-// Finalizes query metrics and emits profiling output if enabled, including pread tail-latency stats.
+// Finalizes query metrics and emits profiling output if enabled, including pread p50/p99 tail-latency stats.
 void QueryProfiler::EndQuery() {
 	unique_lock<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -331,8 +331,13 @@ void QueryProfiler::EndQuery() {
 			}
 			const bool need_throughput = info.Enabled(settings, MetricsType::PREAD_THREAD_THROUGHPUT) ||
 			                             info.Enabled(settings, MetricsType::PREAD_TOTAL_THROUGHPUT);
+			// Original tail latency metric selection (min/max/p99) kept for reference.
+			// const bool need_tail_latency = info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY) ||
+			//                                info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY) ||
+			//                                info.Enabled(settings, MetricsType::PREAD_P99_LATENCY);
 			const bool need_tail_latency = info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY) ||
 			                               info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY) ||
+			                               info.Enabled(settings, MetricsType::PREAD_P50_LATENCY) ||
 			                               info.Enabled(settings, MetricsType::PREAD_P99_LATENCY);
 			vector<PreadLatencyBuffer *> buffers;
 			if (need_throughput || need_tail_latency) {
@@ -401,8 +406,53 @@ void QueryProfiler::EndQuery() {
 			if (info.Enabled(settings, MetricsType::PREAD_TOTAL_THROUGHPUT)) {
 				info.metrics[MetricsType::PREAD_TOTAL_THROUGHPUT] = Value::DOUBLE(aggregate_throughput);
 			}
+			// Original tail latency aggregation (min/max/p99) kept for reference.
+			// double min_seconds = 0.0;
+			// double max_seconds = 0.0;
+			// double p99_seconds = 0.0;
+			// if (need_tail_latency) {
+			// 	idx_t total_samples = 0;
+			// 	for (auto *buffer : buffers) {
+			// 		total_samples += buffer->latencies_ns.size();
+			// 	}
+			// 	if (total_samples > 0) {
+			// 		vector<uint64_t> samples;
+			// 		samples.reserve(total_samples);
+			// 		auto min_ns = NumericLimits<uint64_t>::Maximum();
+			// 		uint64_t max_ns = 0;
+			// 		for (auto *buffer : buffers) {
+			// 			for (auto value : buffer->latencies_ns) {
+			// 				samples.push_back(value);
+			// 				if (value < min_ns) {
+			// 					min_ns = value;
+			// 				}
+			// 				if (value > max_ns) {
+			// 					max_ns = value;
+			// 				}
+			// 			}
+			// 		}
+			// 		const auto p99_index = static_cast<idx_t>((total_samples - 1) * 99 / 100);
+			// 		std::nth_element(samples.begin(), samples.begin() + p99_index, samples.end());
+			// 		const auto p99_ns = samples[p99_index];
+			// 		min_seconds = static_cast<double>(min_ns) * 1e-9;
+			// 		max_seconds = static_cast<double>(max_ns) * 1e-9;
+			// 		p99_seconds = static_cast<double>(p99_ns) * 1e-9;
+			// 		printf("[PREAD-IO] latency min=%g max=%g p99=%g seconds\n", min_seconds, max_seconds, p99_seconds);
+			// 	}
+			// }
+			// if (info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY)) {
+			// 	info.metrics[MetricsType::PREAD_MIN_LATENCY] = Value::DOUBLE(min_seconds);
+			// }
+			// if (info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY)) {
+			// 	info.metrics[MetricsType::PREAD_MAX_LATENCY] = Value::DOUBLE(max_seconds);
+			// }
+			// if (info.Enabled(settings, MetricsType::PREAD_P99_LATENCY)) {
+			// 	info.metrics[MetricsType::PREAD_P99_LATENCY] = Value::DOUBLE(p99_seconds);
+			// }
+
 			double min_seconds = 0.0;
 			double max_seconds = 0.0;
+			double p50_seconds = 0.0;
 			double p99_seconds = 0.0;
 			if (need_tail_latency) {
 				idx_t total_samples = 0;
@@ -425,13 +475,19 @@ void QueryProfiler::EndQuery() {
 							}
 						}
 					}
+					const auto p50_index = static_cast<idx_t>((total_samples - 1) * 50 / 100);
 					const auto p99_index = static_cast<idx_t>((total_samples - 1) * 99 / 100);
+					// P50 and P99 are computed with nth_element to avoid a full sort.
+					std::nth_element(samples.begin(), samples.begin() + p50_index, samples.end());
+					const auto p50_ns = samples[p50_index];
 					std::nth_element(samples.begin(), samples.begin() + p99_index, samples.end());
 					const auto p99_ns = samples[p99_index];
 					min_seconds = static_cast<double>(min_ns) * 1e-9;
 					max_seconds = static_cast<double>(max_ns) * 1e-9;
+					p50_seconds = static_cast<double>(p50_ns) * 1e-9;
 					p99_seconds = static_cast<double>(p99_ns) * 1e-9;
-					printf("[PREAD-IO] latency min=%g max=%g p99=%g seconds\n", min_seconds, max_seconds, p99_seconds);
+					// printf("[PREAD-IO] latency min=%g max=%g p50=%g p99=%g seconds\n", min_seconds, max_seconds,
+					//        p50_seconds, p99_seconds);
 				}
 			}
 			if (info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY)) {
@@ -439,6 +495,9 @@ void QueryProfiler::EndQuery() {
 			}
 			if (info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY)) {
 				info.metrics[MetricsType::PREAD_MAX_LATENCY] = Value::DOUBLE(max_seconds);
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_P50_LATENCY)) {
+				info.metrics[MetricsType::PREAD_P50_LATENCY] = Value::DOUBLE(p50_seconds);
 			}
 			if (info.Enabled(settings, MetricsType::PREAD_P99_LATENCY)) {
 				info.metrics[MetricsType::PREAD_P99_LATENCY] = Value::DOUBLE(p99_seconds);
