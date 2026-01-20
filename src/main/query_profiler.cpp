@@ -120,10 +120,13 @@ void QueryProfiler::Reset() {
 	query_metrics.dds_pread_max_in_flight = 0;
 	query_metrics.dds_pread_wall_start_ns = 0;
 	query_metrics.dds_pread_wall_end_ns = 0;
+	// DDS pread metrics are optional and can be compile-time disabled.
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	{
 		lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
 		dds_pread_thread_stats.clear();
 	}
+#endif
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -284,6 +287,8 @@ void QueryProfiler::EndQuery() {
 			if (info.Enabled(settings, MetricsType::TOTAL_BYTES_WRITTEN)) {
 				info.metrics[MetricsType::TOTAL_BYTES_WRITTEN] = Value::UBIGINT(query_metrics.total_bytes_written);
 			}
+			// DDS pread metrics are optional and can be compile-time disabled.
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 			if (info.Enabled(settings, MetricsType::DDS_PREAD_LATENCY)) {
 				double latency_seconds = 0.0;
 				const auto call_count = query_metrics.dds_pread_call_count.load();
@@ -298,6 +303,29 @@ void QueryProfiler::EndQuery() {
 			double thread_throughput = 0.0;
 			double aggregate_throughput = 0.0;
 			if (need_throughput) {
+				// Previous throughput calculation used summed pread time (not wall clock).
+				// auto total_time_ns = static_cast<double>(query_metrics.dds_pread_time_ns.load());
+				// auto total_bytes = static_cast<double>(query_metrics.dds_pread_bytes.load());
+				// if (total_time_ns > 0.0) {
+				// 	aggregate_throughput = total_bytes / total_time_ns * 1e9;
+				// }
+				// double throughput_sum = 0.0;
+				// idx_t thread_count = 0;
+				// {
+				// 	lock_guard<std::mutex> guard(dds_pread_thread_stats_mutex);
+				// 	for (auto &entry : dds_pread_thread_stats) {
+				// 		if (entry.second.time_ns == 0) {
+				// 			continue;
+				// 		}
+				// 		throughput_sum += static_cast<double>(entry.second.bytes) /
+				// 		                  static_cast<double>(entry.second.time_ns) * 1e9;
+				// 		thread_count++;
+				// 	}
+				// }
+				// if (thread_count > 0) {
+				// 	thread_throughput = throughput_sum / static_cast<double>(thread_count);
+				// }
+
 				// throughput calculation uses wall clock time.
 				const auto total_bytes = static_cast<double>(query_metrics.dds_pread_bytes.load());
 				const auto wall_start = query_metrics.dds_pread_wall_start_ns.load();
@@ -336,6 +364,7 @@ void QueryProfiler::EndQuery() {
 				printf("[DDS-IO] max concurrent DDSPosix::pread threads=%llu\n",
 				       static_cast<unsigned long long>(query_metrics.dds_pread_max_in_flight.load()));
 			}
+#endif
 			// Added parquet crypto/codec metrics to the query-global output.
 			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_TIME)) {
 				info.metrics[MetricsType::PARQUET_DECRYPTION_TIME] =
@@ -430,6 +459,8 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 // Aggregates DDSPosix pread timing/byte metrics for the current query.
 void QueryProfiler::AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
                                             uint64_t wall_end_ns) {
+	// DDS pread metrics are optional and can be compile-time disabled.
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	if (!IsEnabled()) {
 		return;
 	}
@@ -461,6 +492,12 @@ void QueryProfiler::AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes,
 	if (wall_end_ns > stats.wall_end_ns) {
 		stats.wall_end_ns = wall_end_ns;
 	}
+#else
+	(void)elapsed_ns;
+	(void)bytes;
+	(void)wall_start_ns;
+	(void)wall_end_ns;
+#endif
 }
 
 // Store a query-global profiling metric for later emission.
@@ -474,6 +511,7 @@ void QueryProfiler::SetQueryGlobalMetric(MetricsType metric, Value value) {
 
 // Tracks an in-flight DDSPosix::pread call so we can compute max concurrency.
 void QueryProfiler::BeginDDSPosixPread() {
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	if (!IsEnabled()) {
 		return;
 	}
@@ -481,14 +519,17 @@ void QueryProfiler::BeginDDSPosixPread() {
 	auto max_seen = query_metrics.dds_pread_max_in_flight.load();
 	while (current > max_seen && !query_metrics.dds_pread_max_in_flight.compare_exchange_weak(max_seen, current)) {
 	}
+#endif
 }
 
 // Marks the end of an in-flight DDSPosix::pread call for concurrency tracking.
 void QueryProfiler::EndDDSPosixPread() {
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	if (!IsEnabled()) {
 		return;
 	}
 	query_metrics.dds_pread_in_flight.fetch_sub(1);
+#endif
 }
 
 string QueryProfiler::ToString(ExplainFormat explain_format) const {

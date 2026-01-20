@@ -662,12 +662,17 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 /**
  * Reads from a fixed offset, routing Parquet paths through DDS when enabled.
  * Adds DDS/POSIX debug prints and DDS pread alignment statistics at the swap points.
+ * DDS pread latency/throughput/concurrency metrics are compile-time gated by DUCKDB_DDS_PREAD_METRICS_ENABLED.
  */
 void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	auto bytes_to_read = nr_bytes;
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto read_buffer = char_ptr_cast(buffer);
 	auto client_context = handle.GetQueryContext();
+#if !defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) || !(DUCKDB_DDS_PREAD_METRICS_ENABLED)
+	// Avoid unused variable warnings when DDS pread metrics are disabled at compile time.
+	(void)client_context;
+#endif
 	while (nr_bytes > 0) {
 		int64_t bytes_read;
 #ifdef DUCKDB_USE_DDS_POSIX
@@ -676,6 +681,8 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			DUCKDB_DDS_DEBUG_PRINT("[DDS-IO] pread DDS path=\"%s\" size=%lld offset=%llu\n", handle.path.c_str(),
 			                       static_cast<long long>(nr_bytes), static_cast<unsigned long long>(location));
 			DDSPosixDebugRecordPread(UnsafeNumericCast<uint64_t>(nr_bytes), UnsafeNumericCast<uint64_t>(location));
+			// DDS pread metrics block is optional and can be compile-time disabled.
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 			// Track in-flight DDS pread calls so we can report max concurrent threads per query.
 			struct DDSPosixPreadConcurrencyScope {
 				explicit DDSPosixPreadConcurrencyScope(optional_ptr<ClientContext> context_p)
@@ -714,6 +721,13 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 				    NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
 				    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
 			}
+#else
+			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
+			//                                                          UnsafeNumericCast<size_t>(nr_bytes),
+			//                                                          UnsafeNumericCast<off_t>(location));
+			bytes_read = DDSPosix::pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes),
+			                             UnsafeNumericCast<off_t>(location));
+#endif
 		} else
 #endif
 		{

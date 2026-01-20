@@ -182,9 +182,11 @@ public:
 
 	DUCKDB_API void Start(const string &query);
 	//! Reset per-query state and metric counters before a new query starts.
+	//! DDS pread thread stats are reset only when DUCKDB_DDS_PREAD_METRICS_ENABLED is enabled.
 	DUCKDB_API void Reset();
 	DUCKDB_API void StartQuery(const string &query, bool is_explain_analyze = false, bool start_at_optimizer = false);
 	//! Finalize profiling metrics and emit output when profiling is enabled.
+	//! DDS pread metrics are emitted only when DUCKDB_DDS_PREAD_METRICS_ENABLED is enabled.
 	DUCKDB_API void EndQuery();
 
 	//! Adds nr_bytes bytes to the total bytes read.
@@ -197,13 +199,16 @@ public:
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
 	//! Adds a DDSPosix::pread timing and byte count for query throughput metrics.
 	//! Adds a DDSPosix::pread timing and byte count plus wall clock timing for query throughput metrics.
+	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
 	                                        uint64_t wall_end_ns);
 	//! Store a query-global profiling metric for later emission.
 	DUCKDB_API void SetQueryGlobalMetric(MetricsType metric, Value value);
 	//! Marks the start of a DDSPosix::pread call for concurrency tracking.
+	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void BeginDDSPosixPread();
 	//! Marks the end of a DDSPosix::pread call for concurrency tracking.
+	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void EndDDSPosixPread();
 
 	DUCKDB_API void StartExplainAnalyze();

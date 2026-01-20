@@ -54,12 +54,14 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::RESULT_SET_SIZE,
 	        MetricsType::LATENCY,
 	        MetricsType::ROWS_RETURNED,
-        MetricsType::TOTAL_BYTES_READ,
-        MetricsType::TOTAL_BYTES_WRITTEN,
-        MetricsType::MULTI_FILE_MAX_THREADS,
-        MetricsType::DDS_PREAD_LATENCY,
-	        MetricsType::DDS_PREAD_THREAD_THROUGHPUT,
-	        MetricsType::DDS_PREAD_TOTAL_THROUGHPUT,
+	        MetricsType::TOTAL_BYTES_READ,
+	        MetricsType::TOTAL_BYTES_WRITTEN,
+	        MetricsType::MULTI_FILE_MAX_THREADS,
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+	        MetricsType::DDS_PREAD_LATENCY,
+		        MetricsType::DDS_PREAD_THREAD_THROUGHPUT,
+		        MetricsType::DDS_PREAD_TOTAL_THROUGHPUT,
+#endif
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
@@ -94,9 +96,11 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
@@ -233,9 +237,11 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());
