@@ -56,7 +56,15 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::ROWS_RETURNED,
 	        MetricsType::TOTAL_BYTES_READ,
 	        MetricsType::TOTAL_BYTES_WRITTEN,
+	        MetricsType::MULTI_FILE_MAX_THREADS,
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
 	        MetricsType::PREAD_LATENCY,
+	        MetricsType::PREAD_MIN_LATENCY,
+	        MetricsType::PREAD_MAX_LATENCY,
+	        MetricsType::PREAD_P99_LATENCY,
+	        MetricsType::PREAD_THREAD_THROUGHPUT,
+	        MetricsType::PREAD_TOTAL_THROUGHPUT,
+#endif
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
@@ -84,13 +92,21 @@ void ProfilingInfo::ResetMetrics() {
 
 		switch (metric) {
 		case MetricsType::QUERY_NAME:
+		case MetricsType::MULTI_FILE_MAX_THREADS:
 			metrics[metric] = Value::CreateValue("");
 			break;
 		case MetricsType::LATENCY:
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
 		case MetricsType::PREAD_LATENCY:
+		case MetricsType::PREAD_MIN_LATENCY:
+		case MetricsType::PREAD_MAX_LATENCY:
+		case MetricsType::PREAD_P99_LATENCY:
+		case MetricsType::PREAD_THREAD_THROUGHPUT:
+		case MetricsType::PREAD_TOTAL_THROUGHPUT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
@@ -220,13 +236,21 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		switch (metric) {
 		case MetricsType::QUERY_NAME:
 		case MetricsType::OPERATOR_NAME:
+		case MetricsType::MULTI_FILE_MAX_THREADS:
 			yyjson_mut_obj_add_strcpy(doc, dest, key_ptr, metrics[metric].GetValue<string>().c_str());
 			break;
 		case MetricsType::LATENCY:
 		case MetricsType::BLOCKED_THREAD_TIME:
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
 		case MetricsType::PREAD_LATENCY:
+		case MetricsType::PREAD_MIN_LATENCY:
+		case MetricsType::PREAD_MAX_LATENCY:
+		case MetricsType::PREAD_P99_LATENCY:
+		case MetricsType::PREAD_THREAD_THROUGHPUT:
+		case MetricsType::PREAD_TOTAL_THROUGHPUT:
+#endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());

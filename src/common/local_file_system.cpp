@@ -471,18 +471,58 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 	return UnsafeNumericCast<idx_t>(position);
 }
 
+/**
+ * Reads from a fixed offset and tracks pread latency/throughput/concurrency when enabled.
+ * Pread profiling is compile-time gated by DUCKDB_PREAD_METRICS_ENABLED.
+ */
 void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	auto bytes_to_read = nr_bytes;
 	int fd = handle.Cast<UnixFileHandle>().fd;
 	auto read_buffer = char_ptr_cast(buffer);
 	auto client_context = handle.GetQueryContext();
+#if !defined(DUCKDB_PREAD_METRICS_ENABLED) || !(DUCKDB_PREAD_METRICS_ENABLED)
+	// Avoid unused variable warnings when pread metrics are disabled at compile time.
+	(void)client_context;
+#endif
 	// Track each pread call's timing so QueryProfiler can compute the average latency for this query.
+	// Track each pread call's timing/bytes so QueryProfiler can compute latency/throughput for this query.
 	while (nr_bytes > 0) {
+		// const auto start = std::chrono::steady_clock::now();
+		// int64_t bytes_read =
+		//     pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		// const auto elapsed_ns =
+		//     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		// Pread metrics block is optional and can be compile-time disabled.
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+		// Track in-flight pread calls so we can report max concurrent threads per query.
+		struct PreadConcurrencyScope {
+			explicit PreadConcurrencyScope(optional_ptr<ClientContext> context_p) : context(context_p), active(false) {
+				if (context) {
+					QueryProfiler::Get(*context).BeginPread();
+					active = true;
+				}
+			}
+			~PreadConcurrencyScope() {
+				if (active) {
+					QueryProfiler::Get(*context).EndPread();
+				}
+			}
+			optional_ptr<ClientContext> context;
+			bool active;
+		};
+		PreadConcurrencyScope concurrency_scope(client_context);
 		const auto start = std::chrono::steady_clock::now();
 		int64_t bytes_read =
 		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
-		const auto elapsed_ns =
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+		const auto end = std::chrono::steady_clock::now();
+		const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+		const auto wall_start_ns =
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
+		const auto wall_end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count();
+#else
+		int64_t bytes_read =
+		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+#endif
 		if (bytes_read == -1) {
 			throw IOException("Could not read from file \"%s\": %s", {{"errno", std::to_string(errno)}}, handle.path,
 			                  strerror(errno));
@@ -492,9 +532,17 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			    "Could not read enough bytes from file \"%s\": attempted to read %llu bytes from location %llu",
 			    handle.path, nr_bytes, location);
 		}
-		if (client_context) {
-			QueryProfiler::Get(*client_context).AddPreadMetrics(NumericCast<uint64_t>(elapsed_ns));
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+		// Previous implementation tracked latency only.
+		// if (client_context) {
+		// 	QueryProfiler::Get(*client_context).AddPreadMetrics(NumericCast<uint64_t>(elapsed_ns));
+		// }
+		if (client_context && bytes_read > 0) {
+			QueryProfiler::Get(*client_context)
+			    .AddPreadMetrics(NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
+			                    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
 		}
+#endif
 		read_buffer += bytes_read;
 		nr_bytes -= bytes_read;
 		location += UnsafeNumericCast<idx_t>(bytes_read);

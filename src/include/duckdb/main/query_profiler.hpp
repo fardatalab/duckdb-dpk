@@ -25,6 +25,8 @@
 #include "duckdb/main/profiling_node.hpp"
 
 #include <stack>
+#include <mutex>
+#include <thread>
 
 namespace duckdb {
 
@@ -113,12 +115,18 @@ private:
 	reference_map_t<const PhysicalOperator, OperatorInformation> operator_infos;
 };
 
-//! Top level query metrics.
-struct QueryMetrics {
-	//! Initialize query-level counters to zero.
-	QueryMetrics()
-	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
-	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), pread_time_ns(0), pread_call_count(0) {};
+	//! Top level query metrics.
+	struct QueryMetrics {
+		//! Initialize query-level counters to zero.
+		// QueryMetrics()
+		//     : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
+		//       parquet_decompress_time_ns(0), parquet_decompress_call_count(0), pread_time_ns(0), pread_call_count(0) {};
+		//! Updated initializer includes pread throughput/concurrency tracking fields.
+		QueryMetrics()
+		    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
+		      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), pread_time_ns(0), pread_bytes(0),
+		      pread_call_count(0), pread_in_flight(0), pread_max_in_flight(0), pread_wall_start_ns(0),
+		      pread_wall_end_ns(0) {};
 
 	ProfilingInfo query_global_info;
 
@@ -140,8 +148,18 @@ struct QueryMetrics {
 	atomic<uint64_t> parquet_decompress_call_count;
 	//! Total nanoseconds spent issuing LocalFileSystem::Read pread calls in this query
 	atomic<uint64_t> pread_time_ns;
+	//! Total bytes read via LocalFileSystem::Read pread calls in this query
+	atomic<uint64_t> pread_bytes;
 	//! Number of LocalFileSystem::Read pread calls in this query
 	atomic<uint64_t> pread_call_count;
+	//! Number of LocalFileSystem::Read pread calls currently in flight
+	atomic<uint64_t> pread_in_flight;
+	//! Maximum number of concurrent LocalFileSystem::Read pread calls observed
+	atomic<uint64_t> pread_max_in_flight;
+	//! Wall clock start (steady clock, ns since epoch) for the first pread in the query
+	atomic<uint64_t> pread_wall_start_ns;
+	//! Wall clock end (steady clock, ns since epoch) for the last pread in the query
+	atomic<uint64_t> pread_wall_end_ns;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -166,9 +184,11 @@ public:
 
 	DUCKDB_API void Start(const string &query);
 	//! Reset per-query state and metric counters before a new query starts.
+	//! Pread thread stats are reset only when DUCKDB_PREAD_METRICS_ENABLED is enabled.
 	DUCKDB_API void Reset();
 	DUCKDB_API void StartQuery(const string &query, bool is_explain_analyze = false, bool start_at_optimizer = false);
 	//! Finalize profiling metrics and emit output when profiling is enabled.
+	//! Pread metrics are emitted only when DUCKDB_PREAD_METRICS_ENABLED is enabled.
 	DUCKDB_API void EndQuery();
 
 	//! Adds nr_bytes bytes to the total bytes read.
@@ -180,7 +200,18 @@ public:
 	//! Adds a parquet decompression timing in nanoseconds and increments the call counter.
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
 	//! Adds a pread timing entry so average latency can be derived before the profiler output is rendered.
-	DUCKDB_API void AddPreadMetrics(uint64_t elapsed_ns);
+	// DUCKDB_API void AddPreadMetrics(uint64_t elapsed_ns);
+	//! Adds a pread timing entry plus bytes and wall clock timing for throughput metrics.
+	//! No-op when DUCKDB_PREAD_METRICS_ENABLED is disabled.
+	DUCKDB_API void AddPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns, uint64_t wall_end_ns);
+	//! Store a query-global profiling metric for later emission.
+	DUCKDB_API void SetQueryGlobalMetric(MetricsType metric, Value value);
+	//! Marks the start of a pread call for concurrency tracking.
+	//! No-op when DUCKDB_PREAD_METRICS_ENABLED is disabled.
+	DUCKDB_API void BeginPread();
+	//! Marks the end of a pread call for concurrency tracking.
+	//! No-op when DUCKDB_PREAD_METRICS_ENABLED is disabled.
+	DUCKDB_API void EndPread();
 
 	DUCKDB_API void StartExplainAnalyze();
 
@@ -272,6 +303,24 @@ private:
 
 private:
 	void MoveOptimizerPhasesToRoot();
+
+	//! Holds per-thread pread latency values for tail-latency computation.
+	struct PreadLatencyBuffer;
+	//! Thread-local buffers are registered into a fixed slot table using atomics (no per-call locks).
+	vector<PreadLatencyBuffer *> pread_latency_buffers;
+	std::atomic<idx_t> pread_latency_buffer_count {0};
+	std::atomic<uint64_t> pread_latency_generation {0};
+
+	//! Legacy per-thread pread stats (kept for reference; thread-local buffers are used to avoid per-call locks).
+	//! LocalFileSystem::Read pread-specific thread-level statistics.
+	struct PreadThreadStats {
+		uint64_t bytes = 0;
+		uint64_t time_ns = 0;
+		uint64_t wall_start_ns = 0;
+		uint64_t wall_end_ns = 0;
+	};
+	unordered_map<std::thread::id, PreadThreadStats, std::hash<std::thread::id>> pread_thread_stats;
+	std::mutex pread_thread_stats_mutex;
 
 	//! Check whether or not an operator type requires query profiling. If none of the ops in a query require profiling
 	//! no profiling information is output.

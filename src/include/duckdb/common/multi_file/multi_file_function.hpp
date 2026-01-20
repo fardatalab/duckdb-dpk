@@ -13,7 +13,9 @@
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/multi_file/multi_file_data.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include <numeric>
+#include <cstdio>
 
 namespace duckdb {
 
@@ -471,8 +473,10 @@ public:
 		return std::move(result);
 	}
 
+	//! Initialize global multi-file scan state and capture per-file max thread metadata for profiling/logging.
 	static unique_ptr<GlobalTableFunctionState> MultiFileInitGlobal(ClientContext &context,
 	                                                                TableFunctionInitInput &input) {
+		// Initialize global multi-file state and capture per-file max thread metadata for profiling/logging.
 		auto &bind_data = input.bind_data->CastNoConst<MultiFileBindData>();
 		unique_ptr<MultiFileGlobalState> result;
 
@@ -541,6 +545,25 @@ public:
 		auto max_threads = bind_data.interface->MaxThreads(bind_data, *result, expand_result);
 		if (max_threads.IsValid()) {
 			result->max_threads = MinValue<idx_t>(result->max_threads, max_threads.GetIndex());
+		}
+		// Print the file list alongside the resolved max thread count for this table scan,
+		// and record a compact metric string for profiling output.
+		const auto resolved_files = file_list.GetAllFiles();
+		string max_threads_metric;
+		for (const auto &file_info : resolved_files) {
+			if (!max_threads_metric.empty()) {
+				max_threads_metric += ", ";
+			}
+			max_threads_metric += file_info.path + "=" + std::to_string(result->max_threads);
+			printf("[TABLE-SCAN] file=\"%s\" max_threads=%llu\n", file_info.path.c_str(),
+			       static_cast<unsigned long long>(result->max_threads));
+		}
+		if (!max_threads_metric.empty()) {
+			// NOTE: Value::VARCHAR is not available in this branch; use the Value string constructor instead.
+			// QueryProfiler::Get(context).SetQueryGlobalMetric(
+			//     MetricsType::MULTI_FILE_MAX_THREADS, Value::VARCHAR(max_threads_metric));
+			QueryProfiler::Get(context).SetQueryGlobalMetric(
+			    MetricsType::MULTI_FILE_MAX_THREADS, Value(max_threads_metric));
 		}
 		bool require_extra_columns =
 		    result->multi_file_reader_state && result->multi_file_reader_state->RequiresExtraColumns();

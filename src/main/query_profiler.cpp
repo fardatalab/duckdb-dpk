@@ -18,11 +18,28 @@
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 using namespace duckdb_yyjson; // NOLINT
 
 namespace duckdb {
+
+// Stores per-thread latency samples and throughput stats for tail-latency computation.
+struct QueryProfiler::PreadLatencyBuffer {
+	QueryProfiler *owner = nullptr;
+	uint64_t generation = 0;
+	vector<uint64_t> latencies_ns;
+	uint64_t bytes = 0;
+	uint64_t time_ns = 0;
+	uint64_t wall_start_ns = 0;
+	uint64_t wall_end_ns = 0;
+};
+
+// Pre-allocate 128MB per thread for latency samples to minimize reallocation.
+static constexpr idx_t PREAD_LATENCY_RESERVE_BYTES = 128ULL * 1024ULL * 1024ULL;
+static constexpr idx_t PREAD_LATENCY_RESERVE_COUNT = PREAD_LATENCY_RESERVE_BYTES / sizeof(uint64_t);
+static constexpr idx_t PREAD_LATENCY_BUFFER_SLOTS = 96; // support up to 96 threads
 
 QueryProfiler::QueryProfiler(ClientContext &context_p)
     : context(context_p), running(false), query_requires_profiling(false), is_explain_analyze(false) {
@@ -111,7 +128,25 @@ void QueryProfiler::Reset() {
 	query_metrics.parquet_decompress_time_ns = 0;
 	query_metrics.parquet_decompress_call_count = 0;
 	query_metrics.pread_time_ns = 0;
+	query_metrics.pread_bytes = 0;
 	query_metrics.pread_call_count = 0;
+	query_metrics.pread_in_flight = 0;
+	query_metrics.pread_max_in_flight = 0;
+	query_metrics.pread_wall_start_ns = 0;
+	query_metrics.pread_wall_end_ns = 0;
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+	// Bump the generation so thread-local buffers re-register for the new query.
+	pread_latency_generation.fetch_add(1);
+	if (pread_latency_buffers.size() < PREAD_LATENCY_BUFFER_SLOTS) {
+		pread_latency_buffers.resize(PREAD_LATENCY_BUFFER_SLOTS);
+	}
+	pread_latency_buffer_count.store(0);
+	// Previous per-thread stats map reset retained for reference.
+	// {
+	// 	lock_guard<std::mutex> guard(pread_thread_stats_mutex);
+	// 	pread_thread_stats.clear();
+	// }
+#endif
 }
 
 void QueryProfiler::StartQuery(const string &query, bool is_explain_analyze_p, bool start_at_optimizer) {
@@ -233,7 +268,7 @@ Value GetCumulativeOptimizers(ProfilingNode &node) {
 	return Value::CreateValue(count);
 }
 
-// Finalizes query metrics and emits profiling output if enabled.
+// Finalizes query metrics and emits profiling output if enabled, including pread tail-latency stats.
 void QueryProfiler::EndQuery() {
 	unique_lock<std::mutex> guard(lock);
 	if (!IsEnabled() || !running) {
@@ -272,6 +307,19 @@ void QueryProfiler::EndQuery() {
 			if (info.Enabled(settings, MetricsType::TOTAL_BYTES_WRITTEN)) {
 				info.metrics[MetricsType::TOTAL_BYTES_WRITTEN] = Value::UBIGINT(query_metrics.total_bytes_written);
 			}
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+			// Previous latency-only block retained for reference.
+			// if (info.Enabled(settings, MetricsType::PREAD_LATENCY)) {
+			// 	double average_seconds = 0.0;
+			// 	const auto call_count = query_metrics.pread_call_count.load();
+			// 	if (call_count != 0) {
+			// 		average_seconds =
+			// 		    static_cast<double>(query_metrics.pread_time_ns.load()) / static_cast<double>(call_count) *
+			// 1e-9;
+			// 	}
+			// 	info.metrics[MetricsType::PREAD_LATENCY] = Value::DOUBLE(average_seconds);
+			// }
+			// Compute pread latency and throughput using wall clock timing.
 			if (info.Enabled(settings, MetricsType::PREAD_LATENCY)) {
 				double average_seconds = 0.0;
 				const auto call_count = query_metrics.pread_call_count.load();
@@ -281,6 +329,126 @@ void QueryProfiler::EndQuery() {
 				}
 				info.metrics[MetricsType::PREAD_LATENCY] = Value::DOUBLE(average_seconds);
 			}
+			const bool need_throughput = info.Enabled(settings, MetricsType::PREAD_THREAD_THROUGHPUT) ||
+			                             info.Enabled(settings, MetricsType::PREAD_TOTAL_THROUGHPUT);
+			const bool need_tail_latency = info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY) ||
+			                               info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY) ||
+			                               info.Enabled(settings, MetricsType::PREAD_P99_LATENCY);
+			vector<PreadLatencyBuffer *> buffers;
+			if (need_throughput || need_tail_latency) {
+				const auto buffer_count = pread_latency_buffer_count.load();
+				buffers.reserve(buffer_count);
+				for (idx_t i = 0; i < buffer_count; i++) {
+					auto *buffer = pread_latency_buffers[i];
+					if (buffer) {
+						buffers.push_back(buffer);
+					}
+				}
+			}
+			double thread_throughput = 0.0;
+			double aggregate_throughput = 0.0;
+			if (need_throughput) {
+				// Previous throughput calculation used summed pread time (not wall clock).
+				// auto total_time_ns = static_cast<double>(query_metrics.pread_time_ns.load());
+				// auto total_bytes = static_cast<double>(query_metrics.pread_bytes.load());
+				// if (total_time_ns > 0.0) {
+				// 	aggregate_throughput = total_bytes / total_time_ns * 1e9;
+				// }
+				// double throughput_sum = 0.0;
+				// idx_t thread_count = 0;
+				// {
+				// 	lock_guard<std::mutex> guard(pread_thread_stats_mutex);
+				// 	for (auto &entry : pread_thread_stats) {
+				// 		if (entry.second.time_ns == 0) {
+				// 			continue;
+				// 		}
+				// 		throughput_sum += static_cast<double>(entry.second.bytes) /
+				// 		                  static_cast<double>(entry.second.time_ns) * 1e9;
+				// 		thread_count++;
+				// 	}
+				// }
+				// if (thread_count > 0) {
+				// 	thread_throughput = throughput_sum / static_cast<double>(thread_count);
+				// }
+
+				// New throughput calculation uses wall clock time.
+				const auto total_bytes = static_cast<double>(query_metrics.pread_bytes.load());
+				const auto wall_start = query_metrics.pread_wall_start_ns.load();
+				const auto wall_end = query_metrics.pread_wall_end_ns.load();
+				if (wall_start != 0 && wall_end > wall_start) {
+					const auto total_wall_ns = static_cast<double>(wall_end - wall_start);
+					aggregate_throughput = total_bytes / total_wall_ns * 1e9;
+				}
+				double throughput_sum = 0.0;
+				idx_t thread_count = 0;
+				for (auto *buffer : buffers) {
+					const auto thread_start = buffer->wall_start_ns;
+					const auto thread_end = buffer->wall_end_ns;
+					if (thread_start == 0 || thread_end <= thread_start) {
+						continue;
+					}
+					const auto thread_wall_ns = static_cast<double>(thread_end - thread_start);
+					throughput_sum += static_cast<double>(buffer->bytes) / thread_wall_ns * 1e9;
+					thread_count++;
+				}
+				if (thread_count > 0) {
+					thread_throughput = throughput_sum / static_cast<double>(thread_count);
+				}
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_THREAD_THROUGHPUT)) {
+				info.metrics[MetricsType::PREAD_THREAD_THROUGHPUT] = Value::DOUBLE(thread_throughput);
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_TOTAL_THROUGHPUT)) {
+				info.metrics[MetricsType::PREAD_TOTAL_THROUGHPUT] = Value::DOUBLE(aggregate_throughput);
+			}
+			double min_seconds = 0.0;
+			double max_seconds = 0.0;
+			double p99_seconds = 0.0;
+			if (need_tail_latency) {
+				idx_t total_samples = 0;
+				for (auto *buffer : buffers) {
+					total_samples += buffer->latencies_ns.size();
+				}
+				if (total_samples > 0) {
+					vector<uint64_t> samples;
+					samples.reserve(total_samples);
+					auto min_ns = NumericLimits<uint64_t>::Maximum();
+					uint64_t max_ns = 0;
+					for (auto *buffer : buffers) {
+						for (auto value : buffer->latencies_ns) {
+							samples.push_back(value);
+							if (value < min_ns) {
+								min_ns = value;
+							}
+							if (value > max_ns) {
+								max_ns = value;
+							}
+						}
+					}
+					const auto p99_index = static_cast<idx_t>((total_samples - 1) * 99 / 100);
+					std::nth_element(samples.begin(), samples.begin() + p99_index, samples.end());
+					const auto p99_ns = samples[p99_index];
+					min_seconds = static_cast<double>(min_ns) * 1e-9;
+					max_seconds = static_cast<double>(max_ns) * 1e-9;
+					p99_seconds = static_cast<double>(p99_ns) * 1e-9;
+					printf("[PREAD-IO] latency min=%g max=%g p99=%g seconds\n", min_seconds, max_seconds, p99_seconds);
+				}
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_MIN_LATENCY)) {
+				info.metrics[MetricsType::PREAD_MIN_LATENCY] = Value::DOUBLE(min_seconds);
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_MAX_LATENCY)) {
+				info.metrics[MetricsType::PREAD_MAX_LATENCY] = Value::DOUBLE(max_seconds);
+			}
+			if (info.Enabled(settings, MetricsType::PREAD_P99_LATENCY)) {
+				info.metrics[MetricsType::PREAD_P99_LATENCY] = Value::DOUBLE(p99_seconds);
+			}
+			// Emit a debug print for the max concurrent pread threads when pread was used.
+			if (query_metrics.pread_call_count.load() > 0) {
+				printf("[PREAD-IO] max concurrent pread threads=%llu\n",
+				       static_cast<unsigned long long>(query_metrics.pread_max_in_flight.load()));
+			}
+#endif
 			// Added parquet crypto/codec metrics to the query-global output.
 			if (info.Enabled(settings, MetricsType::PARQUET_DECRYPTION_TIME)) {
 				info.metrics[MetricsType::PARQUET_DECRYPTION_TIME] =
@@ -373,11 +541,114 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 }
 
 // Records time spent in LocalFileSystem::Read pread calls for averaging later.
-void QueryProfiler::AddPreadMetrics(uint64_t elapsed_ns) {
-	if (IsEnabled()) {
-		query_metrics.pread_time_ns += elapsed_ns;
-		query_metrics.pread_call_count++;
+// void QueryProfiler::AddPreadMetrics(uint64_t elapsed_ns) {
+// 	if (IsEnabled()) {
+// 		query_metrics.pread_time_ns += elapsed_ns;
+// 		query_metrics.pread_call_count++;
+// 	}
+// }
+// Aggregates pread timing/byte metrics for the current query (thread-local, no per-call locks).
+void QueryProfiler::AddPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns, uint64_t wall_end_ns) {
+	// Pread metrics are optional and can be compile-time disabled.
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+	if (!IsEnabled()) {
+		return;
 	}
+	query_metrics.pread_time_ns += elapsed_ns;
+	query_metrics.pread_bytes += bytes;
+	query_metrics.pread_call_count++;
+
+	// Track wall clock window for the full query.
+	auto current_start = query_metrics.pread_wall_start_ns.load();
+	if (current_start == 0 || wall_start_ns < current_start) {
+		query_metrics.pread_wall_start_ns.compare_exchange_weak(current_start, wall_start_ns);
+	}
+	auto current_end = query_metrics.pread_wall_end_ns.load();
+	if (wall_end_ns > current_end) {
+		query_metrics.pread_wall_end_ns.compare_exchange_weak(current_end, wall_end_ns);
+	}
+
+	// Previous per-thread stats map updates (mutex per call) retained for reference.
+	// {
+	// 	lock_guard<std::mutex> guard(pread_thread_stats_mutex);
+	// 	auto &stats = pread_thread_stats[std::this_thread::get_id()];
+	// 	stats.bytes += bytes;
+	// 	stats.time_ns += elapsed_ns;
+	// 	if (stats.wall_start_ns == 0 || wall_start_ns < stats.wall_start_ns) {
+	// 		stats.wall_start_ns = wall_start_ns;
+	// 	}
+	// 	if (wall_end_ns > stats.wall_end_ns) {
+	// 		stats.wall_end_ns = wall_end_ns;
+	// 	}
+	// }
+
+	// Track per-call latencies for tail stats using thread-local storage (no per-call locks).
+	thread_local PreadLatencyBuffer latency_buffer;
+	const auto generation = pread_latency_generation.load();
+	if (latency_buffer.owner != this || latency_buffer.generation != generation) {
+		latency_buffer.owner = this;
+		latency_buffer.generation = generation;
+		latency_buffer.latencies_ns.clear();
+		latency_buffer.bytes = 0;
+		latency_buffer.time_ns = 0;
+		latency_buffer.wall_start_ns = 0;
+		latency_buffer.wall_end_ns = 0;
+		if (latency_buffer.latencies_ns.capacity() < PREAD_LATENCY_RESERVE_COUNT) {
+			latency_buffer.latencies_ns.reserve(PREAD_LATENCY_RESERVE_COUNT);
+		}
+		// Register this thread-local buffer without locking; overflow slots are ignored.
+		const auto slot = pread_latency_buffer_count.fetch_add(1);
+		if (slot < pread_latency_buffers.size()) {
+			pread_latency_buffers[slot] = &latency_buffer;
+		}
+	}
+	latency_buffer.bytes += bytes;
+	latency_buffer.time_ns += elapsed_ns;
+	if (latency_buffer.wall_start_ns == 0 || wall_start_ns < latency_buffer.wall_start_ns) {
+		latency_buffer.wall_start_ns = wall_start_ns;
+	}
+	if (wall_end_ns > latency_buffer.wall_end_ns) {
+		latency_buffer.wall_end_ns = wall_end_ns;
+	}
+	latency_buffer.latencies_ns.push_back(elapsed_ns);
+#else
+	(void)elapsed_ns;
+	(void)bytes;
+	(void)wall_start_ns;
+	(void)wall_end_ns;
+#endif
+}
+
+/** Stores a query-global profiling metric for later emission. */
+void QueryProfiler::SetQueryGlobalMetric(MetricsType metric, Value value) {
+	if (!IsEnabled()) {
+		return;
+	}
+	lock_guard<std::mutex> guard(lock);
+	query_metrics.query_global_info.metrics[metric] = std::move(value);
+}
+
+/** Tracks an in-flight pread call so we can compute max concurrency. */
+void QueryProfiler::BeginPread() {
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+	if (!IsEnabled()) {
+		return;
+	}
+	const auto current = query_metrics.pread_in_flight.fetch_add(1) + 1;
+	auto max_seen = query_metrics.pread_max_in_flight.load();
+	while (current > max_seen && !query_metrics.pread_max_in_flight.compare_exchange_weak(max_seen, current)) {
+	}
+#endif
+}
+
+/** Marks the end of an in-flight pread call for concurrency tracking. */
+void QueryProfiler::EndPread() {
+#if defined(DUCKDB_PREAD_METRICS_ENABLED) && (DUCKDB_PREAD_METRICS_ENABLED)
+	if (!IsEnabled()) {
+		return;
+	}
+	query_metrics.pread_in_flight.fetch_sub(1);
+#endif
 }
 
 string QueryProfiler::ToString(ExplainFormat explain_format) const {
