@@ -750,7 +750,10 @@ void ParquetMetaDataOperatorData::ExecuteBloomProbe(ClientContext &context, cons
 	}
 
 	auto &allocator = BufferAllocator::Get(context);
+	// auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(reader->GetHandle(), false);
+	// Modified: inject QueryContext so non-prefetch reads can carry a ClientContext for metrics.
 	auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(reader->GetHandle(), false);
+	transport->SetQueryContext(QueryContext(context));
 	auto protocol =
 	    make_uniq<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>>(std::move(transport));
 

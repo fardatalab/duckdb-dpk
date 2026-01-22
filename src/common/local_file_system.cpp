@@ -541,6 +541,9 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			QueryProfiler::Get(*client_context)
 			    .AddPreadMetrics(NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
 			                    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
+		} else {
+			// warning print, this should not happen
+			printf("LocalFileSystem::Read: bytes_read = %ld, maybe no client_context?\n", bytes_read);
 		}
 #endif
 		read_buffer += bytes_read;

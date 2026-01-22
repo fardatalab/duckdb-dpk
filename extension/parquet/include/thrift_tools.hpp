@@ -132,6 +132,12 @@ public:
 	      ra_buffer(ReadAheadBuffer(file_handle)), prefetch_mode(prefetch_mode_p) {
 	}
 
+	//! Modified: allows callers to inject a QueryContext so non-prefetch reads carry ClientContext for metrics.
+	void SetQueryContext(QueryContext context_p) {
+		// Store the context so file_handle.GetFileHandle().Read(context, ...) has a valid ClientContext.
+		context = std::move(context_p);
+	}
+
 	uint32_t read(uint8_t *buf, uint32_t len) {
 		auto prefetch_buffer = ra_buffer.GetReadHead(location);
 		if (prefetch_buffer != nullptr && location - prefetch_buffer->location + len <= prefetch_buffer->size) {
