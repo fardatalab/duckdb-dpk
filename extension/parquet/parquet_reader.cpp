@@ -51,7 +51,10 @@ using duckdb_parquet::Type;
 
 static unique_ptr<duckdb_apache::thrift::protocol::TProtocol>
 CreateThriftFileProtocol(QueryContext context, CachingFileHandle &file_handle, bool prefetch_mode) {
+	// auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(file_handle, prefetch_mode);
+	// Modified: inject QueryContext so non-prefetch reads can carry a ClientContext for DDS metrics.
 	auto transport = duckdb_base_std::make_shared<ThriftFileTransport>(file_handle, prefetch_mode);
+	transport->SetQueryContext(std::move(context));
 	return make_uniq<duckdb_apache::thrift::protocol::TCompactProtocolT<ThriftFileTransport>>(std::move(transport));
 }
 

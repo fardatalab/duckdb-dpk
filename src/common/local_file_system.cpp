@@ -723,10 +723,9 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 				    NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
 				    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
 			} else {
-				// printf("[DDS-IO] Warning: skipping DDS pread metrics update for bytes_read=%lld elapsed_ns=%lld
-				// (maybe "
-				//        "no client context)\n",
-				//        static_cast<long long>(bytes_read), static_cast<long long>(elapsed_ns));
+				printf("[DDS-IO] Warning: skipping DDS pread metrics update for bytes_read=%lld elapsed_ns=%lld (maybe "
+				       "no client context)\n",
+				       static_cast<long long>(bytes_read), static_cast<long long>(elapsed_ns));
 			}
 #else
 			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
