@@ -28,6 +28,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/types/bit.hpp"
 
+#include <cstdio>
 #include <chrono>
 
 namespace duckdb {
@@ -244,7 +245,15 @@ bool ColumnReader::PageIsFilteredOut(PageHeader &page_hdr) {
 	// the page has been filtered out!
 	// skip forward
 	auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol->getTransport());
-	trans.Skip(page_hdr.compressed_page_size);
+	// jason: warn when we skip a filtered page which only skips compressed size, should also include length/nonce/tag
+	// sizes
+	const auto skip_start = trans.GetLocation();
+	const auto skip_bytes = UnsafeNumericCast<idx_t>(page_hdr.compressed_page_size);
+	const bool encryption_enabled = Reader().parquet_options.encryption_config != nullptr;
+	fprintf(stderr, "[Parquet][Warning] PageIsFilteredOut skip start=%llu bytes=%llu encrypted=%s (type=%d)\n",
+	        static_cast<unsigned long long>(skip_start), static_cast<unsigned long long>(skip_bytes),
+	        encryption_enabled ? "true" : "false", static_cast<int>(page_hdr.type));
+	trans.Skip(skip_bytes);
 
 	page_rows_available = is_v1 ? v1_header.num_values : v2_header.num_values;
 	encoding = ColumnEncoding::DICTIONARY;
