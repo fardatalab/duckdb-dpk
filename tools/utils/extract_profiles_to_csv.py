@@ -17,16 +17,28 @@ Fields extracted (top-level JSON keys):
 - parquet_decompression_count
 - parquet_decryption_time
 - parquet_decryption_count
+- dds_pread_total_throughput
+- dds_pread_thread_throughput
 - dds_pread_p99_latency
 - dds_pread_p50_latency
+- dds_pread_max_latency
 - dds_pread_min_latency
 - dds_pread_latency
 - dds_pread_call_count
+- pread_total_throughput
+- pread_thread_throughput
+- pread_p99_latency
+- pread_p50_latency
+- pread_max_latency
+- pread_min_latency
+- pread_latency
+- pread_call_count
 
-Note:
-The user request listed `total_bytes_read` twice; this script includes both
-`total_bytes_read` and `total_bytes_written` since both commonly exist in the
-DuckDB profiler output.
+Compatibility:
+- Newer profiling JSONs use `dds_pread_*` keys.
+- Older/orig profiling JSONs use `pread_*` keys.
+    These are different metric families; this script extracts both sets when
+    present and preserves their original key names in the CSV.
 """
 
 from __future__ import annotations
@@ -55,11 +67,23 @@ class ProfileRow:
     parquet_decryption_time: Optional[float]
     parquet_decryption_count: Optional[int]
     # DDS pread latency stats and call count (top-level keys in profiler JSON)
+    dds_pread_total_throughput: Optional[float]
+    dds_pread_thread_throughput: Optional[float]
     dds_pread_p99_latency: Optional[float]
     dds_pread_p50_latency: Optional[float]
+    dds_pread_max_latency: Optional[float]
     dds_pread_min_latency: Optional[float]
     dds_pread_latency: Optional[float]
     dds_pread_call_count: Optional[int]
+    # Legacy/orig pread metrics (without dds_ prefix)
+    pread_total_throughput: Optional[float]
+    pread_thread_throughput: Optional[float]
+    pread_p99_latency: Optional[float]
+    pread_p50_latency: Optional[float]
+    pread_max_latency: Optional[float]
+    pread_min_latency: Optional[float]
+    pread_latency: Optional[float]
+    pread_call_count: Optional[int]
 
 
 # CSV_FIELDNAMES: List[str] = [
@@ -87,11 +111,22 @@ CSV_FIELDNAMES: List[str] = [
     "parquet_decompression_count",
     "parquet_decryption_time",
     "parquet_decryption_count",
+    "dds_pread_total_throughput",
+    "dds_pread_thread_throughput",
     "dds_pread_p99_latency",
     "dds_pread_p50_latency",
+    "dds_pread_max_latency",
     "dds_pread_min_latency",
     "dds_pread_latency",
     "dds_pread_call_count",
+    "pread_total_throughput",
+    "pread_thread_throughput",
+    "pread_p99_latency",
+    "pread_p50_latency",
+    "pread_max_latency",
+    "pread_min_latency",
+    "pread_latency",
+    "pread_call_count",
 ]
 
 
@@ -157,6 +192,19 @@ def _coerce_float(value: Any) -> Optional[float]:
     return None
 
 
+# def _get_with_fallback(profile: Dict[str, Any], preferred_key: str, fallback_key: str) -> Any:
+#     """Return profile[preferred_key] if present, otherwise profile[fallback_key].
+#
+#     NOTE: We intentionally do NOT do fallback/aliasing anymore.
+#     The `dds_pread_*` and `pread_*` keys represent different metric families,
+#     and the CSV should preserve the original names.
+#     """
+#
+#     if preferred_key in profile:
+#         return profile.get(preferred_key)
+#     return profile.get(fallback_key)
+
+
 def load_profile_json(path: Path) -> Dict[str, Any]:
     # Loads a single DuckDB JSON profiling output.
     with path.open("r", encoding="utf-8") as f:
@@ -194,12 +242,26 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
         parquet_decompression_count=_coerce_int(profile.get("parquet_decompression_count")),
         parquet_decryption_time=_coerce_float(profile.get("parquet_decryption_time")),
         parquet_decryption_count=_coerce_int(profile.get("parquet_decryption_count")),
-        # DDS pread metrics (latency stats and call count)
+        # DDS pread metrics (latency stats, throughput, and call count)
+        # Extracted only from `dds_pread_*` keys.
+        dds_pread_total_throughput=_coerce_float(profile.get("dds_pread_total_throughput")),
+        dds_pread_thread_throughput=_coerce_float(profile.get("dds_pread_thread_throughput")),
         dds_pread_p99_latency=_coerce_float(profile.get("dds_pread_p99_latency")),
         dds_pread_p50_latency=_coerce_float(profile.get("dds_pread_p50_latency")),
+        dds_pread_max_latency=_coerce_float(profile.get("dds_pread_max_latency")),
         dds_pread_min_latency=_coerce_float(profile.get("dds_pread_min_latency")),
         dds_pread_latency=_coerce_float(profile.get("dds_pread_latency")),
         dds_pread_call_count=_coerce_int(profile.get("dds_pread_call_count")),
+        # Legacy/orig pread metrics (without dds_ prefix)
+        # Extracted only from `pread_*` keys.
+        pread_total_throughput=_coerce_float(profile.get("pread_total_throughput")),
+        pread_thread_throughput=_coerce_float(profile.get("pread_thread_throughput")),
+        pread_p99_latency=_coerce_float(profile.get("pread_p99_latency")),
+        pread_p50_latency=_coerce_float(profile.get("pread_p50_latency")),
+        pread_max_latency=_coerce_float(profile.get("pread_max_latency")),
+        pread_min_latency=_coerce_float(profile.get("pread_min_latency")),
+        pread_latency=_coerce_float(profile.get("pread_latency")),
+        pread_call_count=_coerce_int(profile.get("pread_call_count")),
     )
 
 
@@ -258,12 +320,24 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "parquet_decompression_count": row.parquet_decompression_count,
                     "parquet_decryption_time": row.parquet_decryption_time,
                     "parquet_decryption_count": row.parquet_decryption_count,
-                    # DDS pread metrics (latency stats and call count)
+                    # DDS pread metrics (latency stats, throughput, and call count)
+                    "dds_pread_total_throughput": row.dds_pread_total_throughput,
+                    "dds_pread_thread_throughput": row.dds_pread_thread_throughput,
                     "dds_pread_p99_latency": row.dds_pread_p99_latency,
                     "dds_pread_p50_latency": row.dds_pread_p50_latency,
+                    "dds_pread_max_latency": row.dds_pread_max_latency,
                     "dds_pread_min_latency": row.dds_pread_min_latency,
                     "dds_pread_latency": row.dds_pread_latency,
                     "dds_pread_call_count": row.dds_pread_call_count,
+                    # Legacy/orig pread metrics (without dds_ prefix)
+                    "pread_total_throughput": row.pread_total_throughput,
+                    "pread_thread_throughput": row.pread_thread_throughput,
+                    "pread_p99_latency": row.pread_p99_latency,
+                    "pread_p50_latency": row.pread_p50_latency,
+                    "pread_max_latency": row.pread_max_latency,
+                    "pread_min_latency": row.pread_min_latency,
+                    "pread_latency": row.pread_latency,
+                    "pread_call_count": row.pread_call_count,
                 }
             )
 
@@ -280,24 +354,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Extract key fields from DuckDB JSON profiling files into a single CSV."
     )
-    # parser.add_argument(
-    #     "--input-dir",
-    #     type=Path,
-    #     default=default_dir,
-    #     help="Directory containing DuckDB JSON profiling files (default: script directory)",
-    # )
+
     parser.add_argument(
         "--input-dir",
         type=Path,
         required=True,
         help="Directory containing DuckDB JSON profiling files",
     )
-    # parser.add_argument(
-    #     "--output-csv",
-    #     type=Path,
-    #     default=default_out,
-    #     help="Path to write the output CSV (default: <input-dir>/tpch_profiles_summary.csv)",
-    # )
+
     parser.add_argument(
         "--output-csv",
         type=Path,
