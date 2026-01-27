@@ -4,17 +4,17 @@
 			"path": "extension/parquet/column_reader.cpp",
 			"bookmarks": [
 				{
-					"line": 260,
+					"line": 208,
 					"column": 0,
 					"label": "ColumnReader::PrepareRead PageIsFilteredOut"
 				},
 				{
-					"line": 291,
+					"line": 239,
 					"column": 0,
 					"label": "ColumnReader::PreparePageV2: decompress and read"
 				},
 				{
-					"line": 360,
+					"line": 308,
 					"column": 0,
 					"label": "ColumnReader::DecompressInternal"
 				}
