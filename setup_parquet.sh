@@ -3,8 +3,8 @@
 # Configuration
 DUCKDB_BIN="./build/release/duckdb"
 DB_FILE="tpch_metadata.db"
-#PARQUET_DIR="./tpch_parquet_encrypted"
-PARQUET_DIR="./tpch_parquet_test"
+PARQUET_DIR="./tpch_parquet_encrypted"
+#PARQUET_DIR="./tpch_parquet_test"
 KEY_NAME="tpch_master_key"
 SECRET_KEY="01234567890123456789012345678901"
 

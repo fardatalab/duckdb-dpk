@@ -5,7 +5,7 @@ DUCKDB_BIN="./build/release/duckdb"
 DB_FILE="tpch_metadata.db"
 #QUERY_DIR="/data/dpk/GPUDB_Profiler/TPC-H/queries"
 QUERY_DIR="/data/dbcomm/tpch-queries"
-PROFILE_DIR="./tpch_test_profiles_orig"
+PROFILE_DIR="./tpch_test_profiles_orig_sf50"
 SECRET_KEY="01234567890123456789012345678901"
 KEY_NAME="tpch_master_key"
 
@@ -43,7 +43,7 @@ for q_nr in {1..22}; do
 PRAGMA add_parquet_key('$KEY_NAME', '$SECRET_KEY');
 
 -- SET threads to 64
-SET threads TO 64;
+SET threads TO 16;
 
 -- Profiling Configuration
 SET profiling_output = '$PROFILE_FILE';
