@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Extract key metrics from DuckDB JSON profiling outputs into a CSV.
 
+Usage: python extract_profiles_to_csv.py [--input-dir INPUT_DIR] [--output-csv OUTPUT_CSV]
+If --output-csv is not provided, the output defaults to <input-dir>/tpch_profiles_summary.csv.
+
 This script scans a directory (default: this file's directory) for JSON profiling
 files (e.g., query1.json) and writes a single CSV where each row corresponds to
 one JSON file.
@@ -366,7 +369,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--output-csv",
         type=Path,
         default=None,
-        help="Path to write the output CSV (default: <input-dir>/tpch_profiles_summary.csv)",
+        help="Path to write the output CSV (default: <input-dir>/<input-dir-name>.csv)",
     )
     return parser.parse_args(argv)
 
@@ -380,7 +383,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     input_dir: Path = args.input_dir
     # output_csv: Path = args.output_csv
-    output_csv: Path = args.output_csv or (input_dir / "tpch_profiles_summary.csv")
+    # Default to a CSV named after the input directory (e.g.,
+    # <input-dir>/<input-dir-name>.csv) so outputs are easy to associate with the
+    # profile set that generated them.
+    output_csv: Path = args.output_csv or (input_dir / f"{input_dir.name}.csv")
 
     if not input_dir.exists() or not input_dir.is_dir():
         raise SystemExit(f"Input directory does not exist or is not a directory: {input_dir}")
