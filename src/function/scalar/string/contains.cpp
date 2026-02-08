@@ -1,15 +1,22 @@
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/profiler.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar/list_functions.hpp"
 #include "duckdb/function/scalar/map_functions.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/function/scalar/struct_functions.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include <cstdio>
 
 namespace duckdb {
 
 namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
 
 struct ContainsAligned {
 	template <class UNSIGNED>
@@ -71,6 +78,25 @@ struct ContainsOperator {
 	}
 };
 
+void StringContainsFunctionProfiled(DataChunk &args, ExpressionState &state, Vector &result) {
+	const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+	const bool has_context = state.HasContext();
+	if (in_table_filter_scope && !has_context) {
+		printf("[WARN] Table-scan LIKE profiling skipped in StringContainsFunctionProfiled: missing ExpressionState context\n");
+	}
+	const bool should_profile = in_table_filter_scope && has_context;
+	Profiler profiler;
+	if (should_profile) {
+		profiler.Start();
+	}
+	BinaryExecutor::ExecuteStandard<string_t, string_t, bool, ContainsOperator>(args.data[0], args.data[1], result,
+	                                                                             args.size());
+	if (should_profile) {
+		profiler.End();
+		QueryProfiler::Get(state.GetContext()).AddTableScanStringLikeOperatorMetrics(ElapsedNs(profiler));
+	}
+}
+
 } // namespace
 
 idx_t FindStrInStr(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle, idx_t needle_size) {
@@ -120,7 +146,7 @@ idx_t FindStrInStr(const string_t &haystack_s, const string_t &needle_s) {
 
 ScalarFunction GetStringContains() {
 	ScalarFunction string_fun("contains", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                          ScalarFunction::BinaryFunction<string_t, string_t, bool, ContainsOperator>);
+	                          StringContainsFunctionProfiled);
 	string_fun.collation_handling = FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS;
 	return string_fun;
 }

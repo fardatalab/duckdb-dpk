@@ -1,11 +1,14 @@
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/profiler.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
+#include <cstdio>
 
 namespace duckdb {
 
@@ -147,6 +150,10 @@ parse_bracket : {
 }
 
 namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
 struct StandardCharacterReader {
 	static void NextCharacter(const char *sdata, idx_t slen, idx_t &sidx) {
 		sidx++;
@@ -486,9 +493,22 @@ void LikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	auto &str = args.data[0];
 	auto &pattern = args.data[1];
 	auto &escape = args.data[2];
-
+	const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+	const bool has_context = state.HasContext();
+	if (in_table_filter_scope && !has_context) {
+		printf("[WARN] Table-scan LIKE profiling skipped in LikeEscapeFunction: missing ExpressionState context\n");
+	}
+	const bool should_profile = in_table_filter_scope && has_context;
+	Profiler profiler;
+	if (should_profile) {
+		profiler.Start();
+	}
 	TernaryExecutor::Execute<string_t, string_t, string_t, bool>(
 	    str, pattern, escape, result, args.size(), FUNC::template Operation<string_t, string_t, string_t>);
+	if (should_profile) {
+		profiler.End();
+		QueryProfiler::Get(state.GetContext()).AddTableScanStringLikeOperatorMetrics(ElapsedNs(profiler));
+	}
 }
 
 template <class ASCII_OP>
@@ -505,6 +525,16 @@ unique_ptr<BaseStatistics> ILikePropagateStats(ClientContext &context, FunctionS
 
 template <class OP, bool INVERT>
 void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+	const bool has_context = state.HasContext();
+	if (in_table_filter_scope && !has_context) {
+		printf("[WARN] Table-scan LIKE profiling skipped in RegularLikeFunction: missing ExpressionState context\n");
+	}
+	const bool should_profile = in_table_filter_scope && has_context;
+	Profiler profiler;
+	if (should_profile) {
+		profiler.Start();
+	}
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	if (func_expr.bind_info) {
 		auto &matcher = func_expr.bind_info->Cast<LikeMatcher>();
@@ -516,6 +546,10 @@ void RegularLikeFunction(DataChunk &input, ExpressionState &state, Vector &resul
 		// use generic like matcher
 		BinaryExecutor::ExecuteStandard<string_t, string_t, bool, OP>(input.data[0], input.data[1], result,
 		                                                              input.size());
+	}
+	if (should_profile) {
+		profiler.End();
+		QueryProfiler::Get(state.GetContext()).AddTableScanStringLikeOperatorMetrics(ElapsedNs(profiler));
 	}
 }
 

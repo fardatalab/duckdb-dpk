@@ -34,6 +34,8 @@ static constexpr idx_t DDS_PREAD_LATENCY_RESERVE_COUNT =
     DDS_PREAD_LATENCY_RESERVE_BYTES / static_cast<idx_t>(sizeof(uint64_t));
 // Number of per-thread latency buffer slots to track at most per query.
 static constexpr idx_t DDS_PREAD_LATENCY_BUFFER_SLOTS = 4096;
+// Thread-local nesting depth for table-scan expression-filter evaluation scopes.
+static thread_local idx_t table_filter_expression_scope_depth = 0;
 } // namespace
 
 QueryProfiler::QueryProfiler(ClientContext &context_p)
@@ -129,6 +131,10 @@ void QueryProfiler::Reset() {
 	query_metrics.dds_pread_max_in_flight = 0;
 	query_metrics.dds_pread_wall_start_ns = 0;
 	query_metrics.dds_pread_wall_end_ns = 0;
+	query_metrics.table_scan_string_constant_comparison_time_ns = 0;
+	query_metrics.table_scan_string_constant_comparison_count = 0;
+	query_metrics.table_scan_string_like_operator_time_ns = 0;
+	query_metrics.table_scan_string_like_operator_count = 0;
 	// DDS pread metrics are optional and can be compile-time disabled.
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	// Original per-thread stats reset (mutex-based); kept for reference.
@@ -544,6 +550,23 @@ void QueryProfiler::EndQuery() {
 				info.metrics[MetricsType::PARQUET_DECOMPRESSION_COUNT] =
 				    Value::UBIGINT(query_metrics.parquet_decompress_call_count);
 			}
+			if (info.Enabled(settings, MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME)) {
+				info.metrics[MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME] = Value::DOUBLE(
+				    static_cast<double>(query_metrics.table_scan_string_constant_comparison_time_ns.load()) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT)) {
+				info.metrics[MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT] =
+				    Value::UBIGINT(query_metrics.table_scan_string_constant_comparison_count.load());
+			}
+			if (info.Enabled(settings, MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME)) {
+				info.metrics[MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.table_scan_string_like_operator_time_ns.load()) *
+				                  1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT)) {
+				info.metrics[MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT] =
+				    Value::UBIGINT(query_metrics.table_scan_string_like_operator_count.load());
+			}
 			if (info.Enabled(settings, MetricsType::ROWS_RETURNED)) {
 				info.metrics[MetricsType::ROWS_RETURNED] = child_info.metrics[MetricsType::OPERATOR_CARDINALITY];
 			}
@@ -615,6 +638,22 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 	if (IsEnabled()) {
 		query_metrics.parquet_decompress_time_ns += elapsed_ns;
 		query_metrics.parquet_decompress_call_count++;
+	}
+}
+
+// Records time spent evaluating table-scan string constant-comparison predicates.
+void QueryProfiler::AddTableScanStringConstantComparisonMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.table_scan_string_constant_comparison_time_ns += elapsed_ns;
+		query_metrics.table_scan_string_constant_comparison_count++;
+	}
+}
+
+// Records time spent evaluating table-scan LIKE-related predicates.
+void QueryProfiler::AddTableScanStringLikeOperatorMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.table_scan_string_like_operator_time_ns += elapsed_ns;
+		query_metrics.table_scan_string_like_operator_count++;
 	}
 }
 
@@ -735,6 +774,20 @@ void QueryProfiler::EndDDSPosixPread() {
 	}
 	query_metrics.dds_pread_in_flight.fetch_sub(1);
 #endif
+}
+
+void QueryProfiler::PushTableFilterExpressionScope() {
+	table_filter_expression_scope_depth++;
+}
+
+void QueryProfiler::PopTableFilterExpressionScope() {
+	if (table_filter_expression_scope_depth > 0) {
+		table_filter_expression_scope_depth--;
+	}
+}
+
+bool QueryProfiler::InTableFilterExpressionScope() {
+	return table_filter_expression_scope_depth > 0;
 }
 
 string QueryProfiler::ToString(ExplainFormat explain_format) const {

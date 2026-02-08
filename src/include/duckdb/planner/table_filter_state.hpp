@@ -13,6 +13,7 @@
 #include "duckdb/execution/expression_executor.hpp"
 
 namespace duckdb {
+class ClientContext;
 
 //! Thread-local state for executing a table filter
 struct TableFilterState {
@@ -21,6 +22,17 @@ public:
 
 public:
 	static unique_ptr<TableFilterState> Initialize(ClientContext &context, const TableFilter &filter);
+	//! Context for the query that owns this filter state.
+	optional_ptr<ClientContext> context;
+
+public:
+	bool HasContext() const {
+		return context != nullptr;
+	}
+	ClientContext &GetContext() const {
+		D_ASSERT(context);
+		return *context;
+	}
 
 public:
 	template <class TARGET>

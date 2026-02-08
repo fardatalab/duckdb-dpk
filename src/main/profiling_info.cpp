@@ -70,7 +70,11 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::PARQUET_DECOMPRESSION_TIME,
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
-	        MetricsType::PARQUET_DECRYPTION_COUNT};
+	        MetricsType::PARQUET_DECRYPTION_COUNT,
+	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME,
+	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT,
+	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME,
+	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT};
 }
 
 profiler_settings_t ProfilingInfo::DefaultRootSettings() {
@@ -112,6 +116,8 @@ void ProfilingInfo::ResetMetrics() {
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
 			break;
 		case MetricsType::OPERATOR_NAME:
@@ -135,6 +141,8 @@ void ProfilingInfo::ResetMetrics() {
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
 		case MetricsType::PARQUET_DECRYPTION_COUNT:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT:
 			metrics[metric] = Value::CreateValue<uint64_t>(0);
 			break;
 		case MetricsType::EXTRA_INFO:
@@ -259,7 +267,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
-		case MetricsType::PARQUET_DECRYPTION_TIME: {
+		case MetricsType::PARQUET_DECRYPTION_TIME:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());
 			break;
 		}
@@ -281,7 +291,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::DDS_PREAD_CALL_COUNT:
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
-		case MetricsType::PARQUET_DECRYPTION_COUNT: {
+		case MetricsType::PARQUET_DECRYPTION_COUNT:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT: {
 			yyjson_mut_obj_add_uint(doc, dest, key_ptr, metrics[metric].GetValue<uint64_t>());
 			break;
 		}

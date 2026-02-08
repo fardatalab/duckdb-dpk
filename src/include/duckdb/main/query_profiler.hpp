@@ -124,7 +124,9 @@ struct QueryMetrics {
 	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
 	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), dds_pread_time_ns(0), dds_pread_bytes(0),
 	      dds_pread_call_count(0), dds_pread_in_flight(0), dds_pread_max_in_flight(0),
-	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0) {};
+	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0),
+	      table_scan_string_constant_comparison_time_ns(0), table_scan_string_constant_comparison_count(0),
+	      table_scan_string_like_operator_time_ns(0), table_scan_string_like_operator_count(0) {};
 
 	ProfilingInfo query_global_info;
 
@@ -158,6 +160,14 @@ struct QueryMetrics {
 	atomic<uint64_t> dds_pread_wall_start_ns;
 	//! Wall clock end (steady clock, ns since epoch) for the last DDSPosix::pread in the query
 	atomic<uint64_t> dds_pread_wall_end_ns;
+	//! Total nanoseconds spent evaluating table-scan string constant comparisons.
+	atomic<uint64_t> table_scan_string_constant_comparison_time_ns;
+	//! Number of table-scan string constant-comparison predicate evaluation calls.
+	atomic<uint64_t> table_scan_string_constant_comparison_count;
+	//! Total nanoseconds spent evaluating table-scan LIKE-related predicates.
+	atomic<uint64_t> table_scan_string_like_operator_time_ns;
+	//! Number of table-scan LIKE-related predicate evaluation calls.
+	atomic<uint64_t> table_scan_string_like_operator_count;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -199,6 +209,10 @@ public:
 	DUCKDB_API void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
 	//! Adds a parquet decompression timing in nanoseconds and increments the call counter.
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
+	//! Adds table-scan string constant-comparison predicate evaluation timing in nanoseconds.
+	DUCKDB_API void AddTableScanStringConstantComparisonMetrics(uint64_t elapsed_ns);
+	//! Adds table-scan LIKE-related predicate evaluation timing in nanoseconds.
+	DUCKDB_API void AddTableScanStringLikeOperatorMetrics(uint64_t elapsed_ns);
 	//! Adds a DDSPosix::pread timing and byte count for query throughput metrics.
 	//! Adds a DDSPosix::pread timing and byte count plus wall clock timing for query throughput metrics.
 	//! Modified: records per-call latency samples in a lock-free, per-thread buffer for tail metrics (min/max/p99).
@@ -213,6 +227,12 @@ public:
 	//! Marks the end of a DDSPosix::pread call for concurrency tracking.
 	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void EndDDSPosixPread();
+	//! Enter/exit a thread-local scope indicating we are evaluating pushed-down
+	//! table-scan expression filters. LIKE-related scalar functions use this to
+	//! ensure only table-scan predicate work is counted.
+	DUCKDB_API static void PushTableFilterExpressionScope();
+	DUCKDB_API static void PopTableFilterExpressionScope();
+	DUCKDB_API static bool InTableFilterExpressionScope();
 
 	DUCKDB_API void StartExplainAnalyze();
 

@@ -5,6 +5,7 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/struct_filter.hpp"
@@ -16,9 +17,27 @@
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 namespace duckdb {
+
+namespace {
+
+struct TableFilterExpressionScopeGuard {
+	TableFilterExpressionScopeGuard() {
+		QueryProfiler::PushTableFilterExpressionScope();
+	}
+	~TableFilterExpressionScopeGuard() {
+		QueryProfiler::PopTableFilterExpressionScope();
+	}
+};
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
+
+} // namespace
 
 //===--------------------------------------------------------------------===//
 // Create
@@ -530,8 +549,19 @@ idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, Unifi
 		}
 		case PhysicalType::VARCHAR: {
 			auto predicate = string_t(StringValue::Get(constant_filter.constant));
-			FilterSelectionSwitch<string_t>(vdata, predicate, sel, approved_tuple_count,
-			                                constant_filter.comparison_type);
+			if (filter_state.HasContext()) {
+				Profiler predicate_profiler;
+				predicate_profiler.Start();
+				FilterSelectionSwitch<string_t>(vdata, predicate, sel, approved_tuple_count,
+				                                constant_filter.comparison_type);
+				predicate_profiler.End();
+				QueryProfiler::Get(filter_state.GetContext())
+				    .AddTableScanStringConstantComparisonMetrics(ElapsedNs(predicate_profiler));
+			} else {
+				printf("[WARN] Table-scan string constant-comparison profiling skipped: missing TableFilterState context\n");
+				FilterSelectionSwitch<string_t>(vdata, predicate, sel, approved_tuple_count,
+				                                constant_filter.comparison_type);
+			}
 			break;
 		}
 		case PhysicalType::BOOL: {
@@ -595,6 +625,7 @@ idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, Unifi
 				}
 				auto current_result_data = result_sel.data() + result_offset;
 				SelectionVector current_result_sel(current_result_data);
+				TableFilterExpressionScopeGuard table_filter_scope_guard;
 				idx_t new_matches =
 				    state.executor.SelectExpression(chunk, current_result_sel, current_sel, current_count);
 				// increment all matches by the offset
@@ -610,6 +641,7 @@ idx_t ColumnSegment::FilterSelection(SelectionVector &sel, Vector &vector, Unifi
 			DataChunk chunk;
 			chunk.data.emplace_back(vector);
 			chunk.SetCardinality(scan_count);
+			TableFilterExpressionScopeGuard table_filter_scope_guard;
 			approved_tuple_count = state.executor.SelectExpression(chunk, result_sel, sel, approved_tuple_count);
 		}
 		sel.Initialize(result_sel);

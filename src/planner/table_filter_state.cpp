@@ -5,6 +5,11 @@
 
 namespace duckdb {
 
+static unique_ptr<TableFilterState> AttachContext(ClientContext &context, unique_ptr<TableFilterState> state) {
+	state->context = &context;
+	return state;
+}
+
 ExpressionFilterState::ExpressionFilterState(ClientContext &context, const Expression &expression) : executor(context) {
 	executor.AddExpression(expression);
 }
@@ -13,7 +18,7 @@ unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context
 	switch (filter.filter_type) {
 	case TableFilterType::OPTIONAL_FILTER:
 		// optional filter is not executed - create an empty filter state
-		return make_uniq<TableFilterState>();
+		return AttachContext(context, make_uniq<TableFilterState>());
 	case TableFilterType::STRUCT_EXTRACT: {
 		auto &struct_filter = filter.Cast<StructFilter>();
 		return Initialize(context, *struct_filter.child_filter);
@@ -24,7 +29,7 @@ unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context
 		for (auto &child_filter : conj_filter.child_filters) {
 			result->child_states.push_back(Initialize(context, *child_filter));
 		}
-		return std::move(result);
+		return AttachContext(context, std::move(result));
 	}
 	case TableFilterType::CONJUNCTION_AND: {
 		auto &conj_filter = filter.Cast<ConjunctionAndFilter>();
@@ -32,17 +37,17 @@ unique_ptr<TableFilterState> TableFilterState::Initialize(ClientContext &context
 		for (auto &child_filter : conj_filter.child_filters) {
 			result->child_states.push_back(Initialize(context, *child_filter));
 		}
-		return std::move(result);
+		return AttachContext(context, std::move(result));
 	}
 	case TableFilterType::EXPRESSION_FILTER: {
 		auto &expr_filter = filter.Cast<ExpressionFilter>();
-		return make_uniq<ExpressionFilterState>(context, *expr_filter.expr);
+		return AttachContext(context, make_uniq<ExpressionFilterState>(context, *expr_filter.expr));
 	}
 	case TableFilterType::CONSTANT_COMPARISON:
 	case TableFilterType::IS_NULL:
 	case TableFilterType::IS_NOT_NULL:
 		// root nodes - create an empty filter state
-		return make_uniq<TableFilterState>();
+		return AttachContext(context, make_uniq<TableFilterState>());
 	default:
 		throw InternalException("Unsupported filter type for TableFilterState::Initialize");
 	}

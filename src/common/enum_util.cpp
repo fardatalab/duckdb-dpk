@@ -2763,6 +2763,10 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_COUNT), "PARQUET_DECOMPRESSION_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_TIME), "PARQUET_DECRYPTION_TIME" },
 		{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_COUNT), "PARQUET_DECRYPTION_COUNT" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME), "TABLE_SCAN_STRING_LIKE_OPERATOR_TIME" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT), "TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::ALL_OPTIMIZERS), "ALL_OPTIMIZERS" },
 		{ static_cast<uint32_t>(MetricsType::CUMULATIVE_OPTIMIZER_TIMING), "CUMULATIVE_OPTIMIZER_TIMING" },
 		{ static_cast<uint32_t>(MetricsType::PLANNER), "PLANNER" },
@@ -2811,7 +2815,8 @@ const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 67, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (71): includes table-scan string predicate timing/counter metrics.
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 71, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
@@ -2822,7 +2827,8 @@ MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 67, "MetricsType", value));
+	// Updated count (71): includes table-scan string predicate timing/counter metrics.
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 71, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

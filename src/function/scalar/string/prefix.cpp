@@ -1,11 +1,19 @@
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/profiler.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include <cstdio>
 
 namespace duckdb {
 
 namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
 
 bool PrefixFunction(const string_t &str, const string_t &pattern) {
 	auto str_length = str.GetSize();
@@ -59,13 +67,32 @@ struct PrefixOperator {
 	}
 };
 
+void PrefixFunctionProfiled(DataChunk &args, ExpressionState &state, Vector &result) {
+	const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+	const bool has_context = state.HasContext();
+	if (in_table_filter_scope && !has_context) {
+		printf("[WARN] Table-scan LIKE profiling skipped in PrefixFunctionProfiled: missing ExpressionState context\n");
+	}
+	const bool should_profile = in_table_filter_scope && has_context;
+	Profiler profiler;
+	if (should_profile) {
+		profiler.Start();
+	}
+	BinaryExecutor::ExecuteStandard<string_t, string_t, bool, PrefixOperator>(args.data[0], args.data[1], result,
+	                                                                           args.size());
+	if (should_profile) {
+		profiler.End();
+		QueryProfiler::Get(state.GetContext()).AddTableScanStringLikeOperatorMetrics(ElapsedNs(profiler));
+	}
+}
+
 } // namespace
 
 ScalarFunction PrefixFun::GetFunction() {
 	return ScalarFunction("prefix",                                     // name of the function
 	                      {LogicalType::VARCHAR, LogicalType::VARCHAR}, // argument list
 	                      LogicalType::BOOLEAN,                         // return type
-	                      ScalarFunction::BinaryFunction<string_t, string_t, bool, PrefixOperator>);
+	                      PrefixFunctionProfiled);
 }
 
 } // namespace duckdb

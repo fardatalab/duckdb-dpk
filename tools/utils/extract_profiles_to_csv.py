@@ -11,6 +11,7 @@ one JSON file.
 Fields extracted (top-level JSON keys):
 - query_id (derived from filename stem, e.g., query1)
 - cpu_time
+- string_predicate_cpu_time
 - query_name
 - latency
 - rows_returned
@@ -20,6 +21,10 @@ Fields extracted (top-level JSON keys):
 - parquet_decompression_count
 - parquet_decryption_time
 - parquet_decryption_count
+- table_scan_string_constant_comparison_time
+- table_scan_string_constant_comparison_count
+- table_scan_string_like_operator_time
+- table_scan_string_like_operator_count
 - dds_pread_total_throughput
 - dds_pread_thread_throughput
 - dds_pread_p99_latency
@@ -60,6 +65,18 @@ class ProfileRow:
     # query_id is taken from the filename (stem), e.g., query1
     query_id: str
     cpu_time: Optional[float]
+    # Aggregate CPU time for the requested string predicate categories, computed
+    # from direct profiler fields:
+    # - table_scan_string_constant_comparison_time
+    # - table_scan_string_like_operator_time
+    #
+    # If direct fields are absent (older profiling JSONs), this value is None.
+    string_predicate_cpu_time: Optional[float]
+    # Direct profiler metrics emitted from DuckDB for table-scan predicate CPU.
+    table_scan_string_constant_comparison_time: Optional[float]
+    table_scan_string_constant_comparison_count: Optional[int]
+    table_scan_string_like_operator_time: Optional[float]
+    table_scan_string_like_operator_count: Optional[int]
     query_name: Optional[str]
     latency: Optional[float]
     rows_returned: Optional[int]
@@ -89,22 +106,14 @@ class ProfileRow:
     pread_call_count: Optional[int]
 
 
-# CSV_FIELDNAMES: List[str] = [
-#     "query_id",
-#     "cpu_time",
-#     "query_name",
-#     "latency",
-#     "rows_returned",
-#     "total_bytes_read",
-#     "total_bytes_written",
-#     "parquet_decompression_time",
-#     "parquet_decompression_count",
-#     "parquet_decryption_time",
-#     "parquet_decryption_count",
-# ]
 CSV_FIELDNAMES: List[str] = [
     "query_id",
     "cpu_time",
+    "string_predicate_cpu_time",
+    "table_scan_string_constant_comparison_time",
+    "table_scan_string_constant_comparison_count",
+    "table_scan_string_like_operator_time",
+    "table_scan_string_like_operator_count",
     "query_name",
     "latency",
     "rows_returned",
@@ -195,19 +204,6 @@ def _coerce_float(value: Any) -> Optional[float]:
     return None
 
 
-# def _get_with_fallback(profile: Dict[str, Any], preferred_key: str, fallback_key: str) -> Any:
-#     """Return profile[preferred_key] if present, otherwise profile[fallback_key].
-#
-#     NOTE: We intentionally do NOT do fallback/aliasing anymore.
-#     The `dds_pread_*` and `pread_*` keys represent different metric families,
-#     and the CSV should preserve the original names.
-#     """
-#
-#     if preferred_key in profile:
-#         return profile.get(preferred_key)
-#     return profile.get(fallback_key)
-
-
 def load_profile_json(path: Path) -> Dict[str, Any]:
     # Loads a single DuckDB JSON profiling output.
     with path.open("r", encoding="utf-8") as f:
@@ -220,22 +216,35 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     Includes DDS pread latency statistics and call count when present in the
     profiler JSON.
     """
-    # return ProfileRow(
-    #     query_id=query_id,
-    #     cpu_time=_coerce_float(profile.get("cpu_time")),
-    #     query_name=_normalize_query_name(profile.get("query_name")),
-    #     latency=_coerce_float(profile.get("latency")),
-    #     rows_returned=_coerce_int(profile.get("rows_returned")),
-    #     total_bytes_read=_coerce_int(profile.get("total_bytes_read")),
-    #     total_bytes_written=_coerce_int(profile.get("total_bytes_written")),
-    #     parquet_decompression_time=_coerce_float(profile.get("parquet_decompression_time")),
-    #     parquet_decompression_count=_coerce_int(profile.get("parquet_decompression_count")),
-    #     parquet_decryption_time=_coerce_float(profile.get("parquet_decryption_time")),
-    #     parquet_decryption_count=_coerce_int(profile.get("parquet_decryption_count")),
-    # )
+    table_scan_string_constant_comparison_time = _coerce_float(
+        profile.get("table_scan_string_constant_comparison_time")
+    )
+    table_scan_string_constant_comparison_count = _coerce_int(
+        profile.get("table_scan_string_constant_comparison_count")
+    )
+    table_scan_string_like_operator_time = _coerce_float(profile.get("table_scan_string_like_operator_time"))
+    table_scan_string_like_operator_count = _coerce_int(profile.get("table_scan_string_like_operator_count"))
+
+    # Use only direct profiler metrics for the requested string predicate CPU
+    # categories. For older JSONs without these fields, leave values empty.
+    if (
+        table_scan_string_constant_comparison_time is not None
+        or table_scan_string_like_operator_time is not None
+    ):
+        string_predicate_cpu_time = (table_scan_string_constant_comparison_time or 0.0) + (
+            table_scan_string_like_operator_time or 0.0
+        )
+    else:
+        string_predicate_cpu_time = None
+
     return ProfileRow(
         query_id=query_id,
         cpu_time=_coerce_float(profile.get("cpu_time")),
+        string_predicate_cpu_time=string_predicate_cpu_time,
+        table_scan_string_constant_comparison_time=table_scan_string_constant_comparison_time,
+        table_scan_string_constant_comparison_count=table_scan_string_constant_comparison_count,
+        table_scan_string_like_operator_time=table_scan_string_like_operator_time,
+        table_scan_string_like_operator_count=table_scan_string_like_operator_count,
         query_name=_normalize_query_name(profile.get("query_name")),
         latency=_coerce_float(profile.get("latency")),
         rows_returned=_coerce_int(profile.get("rows_returned")),
@@ -295,25 +304,15 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         for row in rows:
-            # writer.writerow(
-            #     {
-            #         "query_id": row.query_id,
-            #         "cpu_time": row.cpu_time,
-            #         "query_name": row.query_name,
-            #         "latency": row.latency,
-            #         "rows_returned": row.rows_returned,
-            #         "total_bytes_read": row.total_bytes_read,
-            #         "total_bytes_written": row.total_bytes_written,
-            #         "parquet_decompression_time": row.parquet_decompression_time,
-            #         "parquet_decompression_count": row.parquet_decompression_count,
-            #         "parquet_decryption_time": row.parquet_decryption_time,
-            #         "parquet_decryption_count": row.parquet_decryption_count,
-            #     }
-            # )
             writer.writerow(
                 {
                     "query_id": row.query_id,
                     "cpu_time": row.cpu_time,
+                    "string_predicate_cpu_time": row.string_predicate_cpu_time,
+                    "table_scan_string_constant_comparison_time": row.table_scan_string_constant_comparison_time,
+                    "table_scan_string_constant_comparison_count": row.table_scan_string_constant_comparison_count,
+                    "table_scan_string_like_operator_time": row.table_scan_string_like_operator_time,
+                    "table_scan_string_like_operator_count": row.table_scan_string_like_operator_count,
                     "query_name": row.query_name,
                     "latency": row.latency,
                     "rows_returned": row.rows_returned,
@@ -351,9 +350,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     The input directory is now required to ensure profiling JSONs are picked
     from the user-specified location.
     """
-    # default_dir = Path(__file__).resolve().parent
-    # default_out = default_dir / "tpch_profiles_summary.csv"
-
     parser = argparse.ArgumentParser(
         description="Extract key fields from DuckDB JSON profiling files into a single CSV."
     )
@@ -382,7 +378,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     args = parse_args(argv)
     input_dir: Path = args.input_dir
-    # output_csv: Path = args.output_csv
     # Default to a CSV named after the input directory (e.g.,
     # <input-dir>/<input-dir-name>.csv) so outputs are easy to associate with the
     # profile set that generated them.
