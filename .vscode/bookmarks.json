@@ -24,7 +24,7 @@
 			"path": "src/function/scalar/string/like.cpp",
 			"bookmarks": [
 				{
-					"line": 173,
+					"line": 186,
 					"column": 0,
 					"label": "TemplatedLikeOperator"
 				}
