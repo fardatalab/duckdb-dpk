@@ -248,7 +248,10 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
         case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
         case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT:
+        case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME:
+        case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME:
         case MetricsType::MULTI_FILE_MAX_THREADS:
+        case MetricsType::DDS_PREAD_TIME:
         case MetricsType::DDS_PREAD_LATENCY:
         case MetricsType::DDS_PREAD_CALL_COUNT:
         case MetricsType::DDS_PREAD_MIN_LATENCY:

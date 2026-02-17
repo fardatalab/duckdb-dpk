@@ -25,6 +25,10 @@ Fields extracted (top-level JSON keys):
 - table_scan_string_constant_comparison_count
 - table_scan_string_like_operator_time
 - table_scan_string_like_operator_count
+- string_predicate_read_io_time
+- table_scan_string_constant_comparison_read_io_time
+- table_scan_string_like_operator_read_io_time
+- dds_pread_time
 - dds_pread_total_throughput
 - dds_pread_thread_throughput
 - dds_pread_p99_latency
@@ -72,11 +76,22 @@ class ProfileRow:
     #
     # If direct fields are absent (older profiling JSONs), this value is None.
     string_predicate_cpu_time: Optional[float]
+    # Aggregate read-I/O time for the requested string predicate categories.
+    # Computed from direct profiler fields:
+    # - table_scan_string_constant_comparison_read_io_time
+    # - table_scan_string_like_operator_read_io_time
+    #
+    # If direct fields are absent (older profiling JSONs), this value is None.
+    string_predicate_read_io_time: Optional[float]
     # Direct profiler metrics emitted from DuckDB for table-scan predicate CPU.
     table_scan_string_constant_comparison_time: Optional[float]
     table_scan_string_constant_comparison_count: Optional[int]
     table_scan_string_like_operator_time: Optional[float]
     table_scan_string_like_operator_count: Optional[int]
+    # Direct profiler metrics emitted from DuckDB for read-I/O time attributed
+    # to table-scan string predicate processing.
+    table_scan_string_constant_comparison_read_io_time: Optional[float]
+    table_scan_string_like_operator_read_io_time: Optional[float]
     query_name: Optional[str]
     latency: Optional[float]
     rows_returned: Optional[int]
@@ -86,6 +101,8 @@ class ProfileRow:
     parquet_decompression_count: Optional[int]
     parquet_decryption_time: Optional[float]
     parquet_decryption_count: Optional[int]
+    # DDS pread total elapsed I/O time across all pread calls in seconds.
+    dds_pread_time: Optional[float]
     # DDS pread latency stats and call count (top-level keys in profiler JSON)
     dds_pread_total_throughput: Optional[float]
     dds_pread_thread_throughput: Optional[float]
@@ -110,10 +127,13 @@ CSV_FIELDNAMES: List[str] = [
     "query_id",
     "cpu_time",
     "string_predicate_cpu_time",
+    "string_predicate_read_io_time",
     "table_scan_string_constant_comparison_time",
     "table_scan_string_constant_comparison_count",
     "table_scan_string_like_operator_time",
     "table_scan_string_like_operator_count",
+    "table_scan_string_constant_comparison_read_io_time",
+    "table_scan_string_like_operator_read_io_time",
     "query_name",
     "latency",
     "rows_returned",
@@ -123,6 +143,7 @@ CSV_FIELDNAMES: List[str] = [
     "parquet_decompression_count",
     "parquet_decryption_time",
     "parquet_decryption_count",
+    "dds_pread_time",
     "dds_pread_total_throughput",
     "dds_pread_thread_throughput",
     "dds_pread_p99_latency",
@@ -224,6 +245,12 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     )
     table_scan_string_like_operator_time = _coerce_float(profile.get("table_scan_string_like_operator_time"))
     table_scan_string_like_operator_count = _coerce_int(profile.get("table_scan_string_like_operator_count"))
+    table_scan_string_constant_comparison_read_io_time = _coerce_float(
+        profile.get("table_scan_string_constant_comparison_read_io_time")
+    )
+    table_scan_string_like_operator_read_io_time = _coerce_float(
+        profile.get("table_scan_string_like_operator_read_io_time")
+    )
 
     # Use only direct profiler metrics for the requested string predicate CPU
     # categories. For older JSONs without these fields, leave values empty.
@@ -237,14 +264,27 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     else:
         string_predicate_cpu_time = None
 
+    if (
+        table_scan_string_constant_comparison_read_io_time is not None
+        or table_scan_string_like_operator_read_io_time is not None
+    ):
+        string_predicate_read_io_time = (table_scan_string_constant_comparison_read_io_time or 0.0) + (
+            table_scan_string_like_operator_read_io_time or 0.0
+        )
+    else:
+        string_predicate_read_io_time = None
+
     return ProfileRow(
         query_id=query_id,
         cpu_time=_coerce_float(profile.get("cpu_time")),
         string_predicate_cpu_time=string_predicate_cpu_time,
+        string_predicate_read_io_time=string_predicate_read_io_time,
         table_scan_string_constant_comparison_time=table_scan_string_constant_comparison_time,
         table_scan_string_constant_comparison_count=table_scan_string_constant_comparison_count,
         table_scan_string_like_operator_time=table_scan_string_like_operator_time,
         table_scan_string_like_operator_count=table_scan_string_like_operator_count,
+        table_scan_string_constant_comparison_read_io_time=table_scan_string_constant_comparison_read_io_time,
+        table_scan_string_like_operator_read_io_time=table_scan_string_like_operator_read_io_time,
         query_name=_normalize_query_name(profile.get("query_name")),
         latency=_coerce_float(profile.get("latency")),
         rows_returned=_coerce_int(profile.get("rows_returned")),
@@ -254,6 +294,7 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
         parquet_decompression_count=_coerce_int(profile.get("parquet_decompression_count")),
         parquet_decryption_time=_coerce_float(profile.get("parquet_decryption_time")),
         parquet_decryption_count=_coerce_int(profile.get("parquet_decryption_count")),
+        dds_pread_time=_coerce_float(profile.get("dds_pread_time")),
         # DDS pread metrics (latency stats, throughput, and call count)
         # Extracted only from `dds_pread_*` keys.
         dds_pread_total_throughput=_coerce_float(profile.get("dds_pread_total_throughput")),
@@ -309,10 +350,13 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "query_id": row.query_id,
                     "cpu_time": row.cpu_time,
                     "string_predicate_cpu_time": row.string_predicate_cpu_time,
+                    "string_predicate_read_io_time": row.string_predicate_read_io_time,
                     "table_scan_string_constant_comparison_time": row.table_scan_string_constant_comparison_time,
                     "table_scan_string_constant_comparison_count": row.table_scan_string_constant_comparison_count,
                     "table_scan_string_like_operator_time": row.table_scan_string_like_operator_time,
                     "table_scan_string_like_operator_count": row.table_scan_string_like_operator_count,
+                    "table_scan_string_constant_comparison_read_io_time": row.table_scan_string_constant_comparison_read_io_time,
+                    "table_scan_string_like_operator_read_io_time": row.table_scan_string_like_operator_read_io_time,
                     "query_name": row.query_name,
                     "latency": row.latency,
                     "rows_returned": row.rows_returned,
@@ -322,6 +366,7 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "parquet_decompression_count": row.parquet_decompression_count,
                     "parquet_decryption_time": row.parquet_decryption_time,
                     "parquet_decryption_count": row.parquet_decryption_count,
+                    "dds_pread_time": row.dds_pread_time,
                     # DDS pread metrics (latency stats, throughput, and call count)
                     "dds_pread_total_throughput": row.dds_pread_total_throughput,
                     "dds_pread_thread_throughput": row.dds_pread_thread_throughput,

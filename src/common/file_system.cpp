@@ -12,10 +12,12 @@
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/common/windows_util.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/logging/log_manager.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 
@@ -737,12 +739,38 @@ int64_t FileHandle::Read(void *buffer, idx_t nr_bytes) {
 }
 
 int64_t FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes) {
-	if (context.GetClientContext() != nullptr) {
-		context.GetClientContext()->client_data->profiler->AddBytesRead(nr_bytes);
+	auto client_context = context.GetClientContext();
+	if (client_context != nullptr) {
+		client_context->client_data->profiler->AddBytesRead(nr_bytes);
 	}
 
-	FileHandleQueryContextScope scope(*this, context.GetClientContext());
-	return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
+	FileHandleQueryContextScope scope(*this, client_context);
+	const bool in_constant_scope =
+	    client_context != nullptr && QueryProfiler::InTableScanStringConstantComparisonIOScope();
+	const bool in_like_scope = client_context != nullptr && QueryProfiler::InTableScanStringLikeOperatorIOScope();
+	const bool track_string_predicate_io = in_constant_scope || in_like_scope;
+	if (!track_string_predicate_io) {
+		return file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
+	}
+
+	const auto start = std::chrono::steady_clock::now();
+	const auto result = file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes));
+	const auto elapsed_ns =
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+	auto &query_profiler = QueryProfiler::Get(*client_context);
+	auto elapsed_ns_u64 = NumericCast<uint64_t>(elapsed_ns);
+	if (in_constant_scope && in_like_scope) {
+		// Split equally to avoid double counting when both categories are active in the same I/O scope.
+		auto constant_ns = elapsed_ns_u64 / 2;
+		auto like_ns = elapsed_ns_u64 - constant_ns;
+		query_profiler.AddTableScanStringConstantComparisonReadIOMetrics(constant_ns);
+		query_profiler.AddTableScanStringLikeOperatorReadIOMetrics(like_ns);
+	} else if (in_constant_scope) {
+		query_profiler.AddTableScanStringConstantComparisonReadIOMetrics(elapsed_ns_u64);
+	} else {
+		query_profiler.AddTableScanStringLikeOperatorReadIOMetrics(elapsed_ns_u64);
+	}
+	return result;
 }
 
 bool FileHandle::Trim(idx_t offset_bytes, idx_t length_bytes) {
@@ -758,12 +786,38 @@ void FileHandle::Read(void *buffer, idx_t nr_bytes, idx_t location) {
 }
 
 void FileHandle::Read(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {
-	if (context.GetClientContext() != nullptr) {
-		context.GetClientContext()->client_data->profiler->AddBytesRead(nr_bytes);
+	auto client_context = context.GetClientContext();
+	if (client_context != nullptr) {
+		client_context->client_data->profiler->AddBytesRead(nr_bytes);
 	}
 
-	FileHandleQueryContextScope scope(*this, context.GetClientContext());
+	FileHandleQueryContextScope scope(*this, client_context);
+	const bool in_constant_scope =
+	    client_context != nullptr && QueryProfiler::InTableScanStringConstantComparisonIOScope();
+	const bool in_like_scope = client_context != nullptr && QueryProfiler::InTableScanStringLikeOperatorIOScope();
+	const bool track_string_predicate_io = in_constant_scope || in_like_scope;
+	if (!track_string_predicate_io) {
+		file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
+		return;
+	}
+
+	const auto start = std::chrono::steady_clock::now();
 	file_system.Read(*this, buffer, UnsafeNumericCast<int64_t>(nr_bytes), location);
+	const auto elapsed_ns =
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+	auto &query_profiler = QueryProfiler::Get(*client_context);
+	auto elapsed_ns_u64 = NumericCast<uint64_t>(elapsed_ns);
+	if (in_constant_scope && in_like_scope) {
+		// Split equally to avoid double counting when both categories are active in the same I/O scope.
+		auto constant_ns = elapsed_ns_u64 / 2;
+		auto like_ns = elapsed_ns_u64 - constant_ns;
+		query_profiler.AddTableScanStringConstantComparisonReadIOMetrics(constant_ns);
+		query_profiler.AddTableScanStringLikeOperatorReadIOMetrics(like_ns);
+	} else if (in_constant_scope) {
+		query_profiler.AddTableScanStringConstantComparisonReadIOMetrics(elapsed_ns_u64);
+	} else {
+		query_profiler.AddTableScanStringLikeOperatorReadIOMetrics(elapsed_ns_u64);
+	}
 }
 
 void FileHandle::Write(QueryContext context, void *buffer, idx_t nr_bytes, idx_t location) {

@@ -126,7 +126,8 @@ struct QueryMetrics {
 	      dds_pread_call_count(0), dds_pread_in_flight(0), dds_pread_max_in_flight(0),
 	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0),
 	      table_scan_string_constant_comparison_time_ns(0), table_scan_string_constant_comparison_count(0),
-	      table_scan_string_like_operator_time_ns(0), table_scan_string_like_operator_count(0) {};
+	      table_scan_string_like_operator_time_ns(0), table_scan_string_like_operator_count(0),
+	      table_scan_string_constant_comparison_read_io_time_ns(0), table_scan_string_like_operator_read_io_time_ns(0) {};
 
 	ProfilingInfo query_global_info;
 
@@ -168,6 +169,10 @@ struct QueryMetrics {
 	atomic<uint64_t> table_scan_string_like_operator_time_ns;
 	//! Number of table-scan LIKE-related predicate evaluation calls.
 	atomic<uint64_t> table_scan_string_like_operator_count;
+	//! Total nanoseconds spent in read I/O while processing table-scan string constant-comparison predicates.
+	atomic<uint64_t> table_scan_string_constant_comparison_read_io_time_ns;
+	//! Total nanoseconds spent in read I/O while processing table-scan LIKE-related predicates.
+	atomic<uint64_t> table_scan_string_like_operator_read_io_time_ns;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -213,6 +218,10 @@ public:
 	DUCKDB_API void AddTableScanStringConstantComparisonMetrics(uint64_t elapsed_ns);
 	//! Adds table-scan LIKE-related predicate evaluation timing in nanoseconds.
 	DUCKDB_API void AddTableScanStringLikeOperatorMetrics(uint64_t elapsed_ns);
+	//! Adds read I/O timing in nanoseconds attributed to table-scan string constant-comparison predicates.
+	DUCKDB_API void AddTableScanStringConstantComparisonReadIOMetrics(uint64_t elapsed_ns);
+	//! Adds read I/O timing in nanoseconds attributed to table-scan LIKE-related predicates.
+	DUCKDB_API void AddTableScanStringLikeOperatorReadIOMetrics(uint64_t elapsed_ns);
 	//! Adds a DDSPosix::pread timing and byte count for query throughput metrics.
 	//! Adds a DDSPosix::pread timing and byte count plus wall clock timing for query throughput metrics.
 	//! Modified: records per-call latency samples in a lock-free, per-thread buffer for tail metrics (min/max/p99).
@@ -233,6 +242,12 @@ public:
 	DUCKDB_API static void PushTableFilterExpressionScope();
 	DUCKDB_API static void PopTableFilterExpressionScope();
 	DUCKDB_API static bool InTableFilterExpressionScope();
+	//! Enter/exit thread-local scopes used to attribute read I/O time to table-scan
+	//! string predicate categories while filter columns are being read.
+	DUCKDB_API static void PushTableScanStringPredicateIOScope(bool constant_comparison, bool like_operator);
+	DUCKDB_API static void PopTableScanStringPredicateIOScope(bool constant_comparison, bool like_operator);
+	DUCKDB_API static bool InTableScanStringConstantComparisonIOScope();
+	DUCKDB_API static bool InTableScanStringLikeOperatorIOScope();
 
 	DUCKDB_API void StartExplainAnalyze();
 

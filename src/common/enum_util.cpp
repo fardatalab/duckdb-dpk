@@ -2748,10 +2748,11 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::OPERATOR_NAME), "OPERATOR_NAME" },
 		{ static_cast<uint32_t>(MetricsType::SYSTEM_PEAK_BUFFER_MEMORY), "SYSTEM_PEAK_BUFFER_MEMORY" },
 		{ static_cast<uint32_t>(MetricsType::SYSTEM_PEAK_TEMP_DIR_SIZE), "SYSTEM_PEAK_TEMP_DIR_SIZE" },
-		{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_READ), "TOTAL_BYTES_READ" },
-		{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
-		{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
-		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_LATENCY), "DDS_PREAD_LATENCY" },
+			{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_READ), "TOTAL_BYTES_READ" },
+			{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
+			{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
+			{ static_cast<uint32_t>(MetricsType::DDS_PREAD_TIME), "DDS_PREAD_TIME" },
+			{ static_cast<uint32_t>(MetricsType::DDS_PREAD_LATENCY), "DDS_PREAD_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_CALL_COUNT), "DDS_PREAD_CALL_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MIN_LATENCY), "DDS_PREAD_MIN_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MAX_LATENCY), "DDS_PREAD_MAX_LATENCY" },
@@ -2767,6 +2768,8 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME), "TABLE_SCAN_STRING_LIKE_OPERATOR_TIME" },
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT), "TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME" },
+		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME), "TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME" },
 		{ static_cast<uint32_t>(MetricsType::ALL_OPTIMIZERS), "ALL_OPTIMIZERS" },
 		{ static_cast<uint32_t>(MetricsType::CUMULATIVE_OPTIMIZER_TIMING), "CUMULATIVE_OPTIMIZER_TIMING" },
 		{ static_cast<uint32_t>(MetricsType::PLANNER), "PLANNER" },
@@ -2815,8 +2818,8 @@ const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
-	// Updated count (71): includes table-scan string predicate timing/counter metrics.
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 71, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (74): includes DDS_PREAD_TIME plus table-scan string predicate read I/O timing metrics.
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 74, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
@@ -2827,8 +2830,8 @@ MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
-	// Updated count (71): includes table-scan string predicate timing/counter metrics.
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 71, "MetricsType", value));
+	// Updated count (74): includes DDS_PREAD_TIME plus table-scan string predicate read I/O timing metrics.
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 74, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

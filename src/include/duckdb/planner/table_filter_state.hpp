@@ -29,7 +29,13 @@ public:
 	bool HasContext() const {
 		return context != nullptr;
 	}
-	ClientContext &GetContext() const {
+	// Non-const access to the ClientContext for callers that will mutate it.
+	ClientContext &GetContext() {
+		D_ASSERT(context);
+		return *context;
+	}
+	// Const access to the ClientContext for callers that should not mutate it.
+	const ClientContext &GetContext() const {
 		D_ASSERT(context);
 		return *context;
 	}

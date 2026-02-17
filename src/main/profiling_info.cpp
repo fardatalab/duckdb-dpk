@@ -58,6 +58,7 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::TOTAL_BYTES_WRITTEN,
 	        MetricsType::MULTI_FILE_MAX_THREADS,
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+	        MetricsType::DDS_PREAD_TIME,
 	        MetricsType::DDS_PREAD_LATENCY,
 	        MetricsType::DDS_PREAD_CALL_COUNT,
 	        MetricsType::DDS_PREAD_MIN_LATENCY,
@@ -74,7 +75,9 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME,
 	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT,
 	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME,
-	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT};
+	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT,
+	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME,
+	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME};
 }
 
 profiler_settings_t ProfilingInfo::DefaultRootSettings() {
@@ -106,6 +109,7 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+		case MetricsType::DDS_PREAD_TIME:
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_MIN_LATENCY:
 		case MetricsType::DDS_PREAD_MAX_LATENCY:
@@ -118,6 +122,8 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME:
 			metrics[metric] = Value::CreateValue(0.0);
 			break;
 		case MetricsType::OPERATOR_NAME:
@@ -258,6 +264,7 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::CPU_TIME:
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+		case MetricsType::DDS_PREAD_TIME:
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_MIN_LATENCY:
 		case MetricsType::DDS_PREAD_MAX_LATENCY:
@@ -269,7 +276,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
-		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME: {
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
+		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME:
+		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME: {
 			yyjson_mut_obj_add_real(doc, dest, key_ptr, metrics[metric].GetValue<double>());
 			break;
 		}
