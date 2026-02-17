@@ -165,6 +165,27 @@ public:
 		return len;
 	}
 
+	/**
+	 * Performs a direct read from the underlying file handle in a single call.
+	 *
+	 * This bypasses prefetch/read-ahead logic intentionally. It is used by DPK/offload
+	 * paths that need a deterministic "one transport read call per encrypted module"
+	 * handoff contract.
+	 */
+	uint32_t ReadDirect(uint8_t *buf, uint32_t len) {
+		if (len == 0) {
+			return 0;
+		}
+		if (location + len > size) {
+			throw InvalidInputException("ReadDirect requested bytes outside file bounds [location=%llu, len=%u, size=%llu]",
+			                            static_cast<unsigned long long>(location), static_cast<unsigned int>(len),
+			                            static_cast<unsigned long long>(size));
+		}
+		file_handle.GetFileHandle().Read(context, buf, len, location);
+		location += len;
+		return len;
+	}
+
 	// Prefetch a single buffer
 	void Prefetch(idx_t pos, uint64_t len) {
 		RegisterPrefetch(pos, len, false);

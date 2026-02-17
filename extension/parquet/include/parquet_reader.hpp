@@ -188,6 +188,18 @@ public:
 	//! Read a data buffer, decrypting if needed and recording timing.
 	uint32_t ReadData(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
 	                  const uint32_t buffer_size);
+	/**
+	 * Reads one full encrypted parquet module in a single direct transport read call.
+	 *
+	 * Module layout:
+	 *   [4-byte length][12-byte nonce][ciphertext][16-byte tag]
+	 * where the encoded length stores nonce+ciphertext+tag size.
+	 *
+	 * The caller provides the expected plaintext ciphertext size (e.g., page compressed size),
+	 * and this method validates the encoded length against it defensively.
+	 */
+	uint32_t ReadEncryptedModuleRaw(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
+	                                const uint32_t plaintext_size);
 
 	//! Accumulate parquet decryption timing and call count for this query.
 	void AddParquetDecryptionMetrics(uint64_t elapsed_ns);

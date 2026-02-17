@@ -24,6 +24,13 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/filter/optional_filter.hpp"
+#include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
@@ -67,6 +74,119 @@ static bool ShouldAndCanPrefetch(ClientContext &context, CachingFileHandle &file
 	bool can_prefetch = file_handle.CanSeek() && !disable_prefetch.GetValue<bool>();
 	return should_prefetch && can_prefetch;
 }
+
+struct TableScanStringPredicateIOScopeFlags {
+	bool constant_comparison = false;
+	bool like_operator = false;
+};
+
+static bool IsStringColumnType(const LogicalType &column_type) {
+	return column_type.InternalType() == PhysicalType::VARCHAR;
+}
+
+static bool IsProfiledLikeFunctionName(const string &function_name) {
+	return function_name == "~~" || function_name == "!~~" || function_name == "like_escape" ||
+	       function_name == "not_like_escape" || function_name == "ilike_escape" ||
+	       function_name == "not_ilike_escape" || function_name == "prefix" || function_name == "suffix" ||
+	       function_name == "contains";
+}
+
+static bool ContainsProfiledLikeFunction(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &func_expr = expr.Cast<BoundFunctionExpression>();
+		if (IsProfiledLikeFunctionName(func_expr.function.name)) {
+			return true;
+		}
+	}
+
+	bool contains_like_function = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!contains_like_function && ContainsProfiledLikeFunction(child)) {
+			contains_like_function = true;
+		}
+	});
+	return contains_like_function;
+}
+
+static void ClassifyTableScanStringPredicateIOScope(const TableFilter &filter, const LogicalType &column_type,
+                                                    TableScanStringPredicateIOScopeFlags &scope_flags) {
+	switch (filter.filter_type) {
+	case TableFilterType::CONSTANT_COMPARISON: {
+		if (IsStringColumnType(column_type)) {
+			scope_flags.constant_comparison = true;
+		}
+		break;
+	}
+	case TableFilterType::CONJUNCTION_AND: {
+		auto &conjunction_filter = filter.Cast<ConjunctionAndFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			ClassifyTableScanStringPredicateIOScope(*child_filter, column_type, scope_flags);
+		}
+		break;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		auto &conjunction_filter = filter.Cast<ConjunctionOrFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			ClassifyTableScanStringPredicateIOScope(*child_filter, column_type, scope_flags);
+		}
+		break;
+	}
+	case TableFilterType::EXPRESSION_FILTER: {
+		if (IsStringColumnType(column_type)) {
+			auto &expr_filter = filter.Cast<ExpressionFilter>();
+			if (expr_filter.expr && ContainsProfiledLikeFunction(*expr_filter.expr)) {
+				scope_flags.like_operator = true;
+			}
+		}
+		break;
+	}
+	case TableFilterType::STRUCT_EXTRACT: {
+		auto &struct_filter = filter.Cast<StructFilter>();
+		// Defensive: for nested struct filters, use the selected child type when available.
+		if (!struct_filter.child_filter) {
+			break;
+		}
+		if (column_type.id() == LogicalTypeId::STRUCT) {
+			auto &child_types = StructType::GetChildTypes(column_type);
+			if (struct_filter.child_idx < child_types.size()) {
+				ClassifyTableScanStringPredicateIOScope(*struct_filter.child_filter,
+				                                        child_types[struct_filter.child_idx].second, scope_flags);
+			}
+		} else {
+			ClassifyTableScanStringPredicateIOScope(*struct_filter.child_filter, column_type, scope_flags);
+		}
+		break;
+	}
+	case TableFilterType::OPTIONAL_FILTER: {
+		auto &optional_filter = filter.Cast<OptionalFilter>();
+		if (optional_filter.child_filter) {
+			ClassifyTableScanStringPredicateIOScope(*optional_filter.child_filter, column_type, scope_flags);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+class TableScanStringPredicateIOScopeGuard {
+public:
+	explicit TableScanStringPredicateIOScopeGuard(TableScanStringPredicateIOScopeFlags flags_p)
+	    : flags(flags_p), active(flags.constant_comparison || flags.like_operator) {
+		if (active) {
+			QueryProfiler::PushTableScanStringPredicateIOScope(flags.constant_comparison, flags.like_operator);
+		}
+	}
+	~TableScanStringPredicateIOScopeGuard() {
+		if (active) {
+			QueryProfiler::PopTableScanStringPredicateIOScope(flags.constant_comparison, flags.like_operator);
+		}
+	}
+
+private:
+	TableScanStringPredicateIOScopeFlags flags;
+	bool active;
+};
 
 static void ParseParquetFooter(data_ptr_t buffer, const string &file_path, idx_t file_size,
                                const shared_ptr<const ParquetEncryptionConfig> &encryption_config, uint32_t &footer_len,
@@ -1036,15 +1156,109 @@ uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &ipr
 		//     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
 		// AddParquetDecryptionMetrics(NumericCast<uint64_t>(elapsed_ns));
 		// return result;
-		// Modified: record compute-only decryption time (transport reads excluded).
-		uint64_t decrypt_compute_ns = 0;
-		const auto result = ParquetCrypto::ReadData(iprot, buffer, buffer_size,
-		                                            parquet_options.encryption_config->GetFooterKey(),
-		                                            *encryption_util, &decrypt_compute_ns);
-		AddParquetDecryptionMetrics(NumericCast<uint64_t>(decrypt_compute_ns));
-		return result;
+		// Previous modified path retained for reference.
+		// uint64_t decrypt_compute_ns = 0;
+		// const auto result = ParquetCrypto::ReadData(iprot, buffer, buffer_size,
+		//                                             parquet_options.encryption_config->GetFooterKey(),
+		//                                             *encryption_util, &decrypt_compute_ns);
+		// AddParquetDecryptionMetrics(NumericCast<uint64_t>(decrypt_compute_ns));
+		// return result;
+
+		// Modified: use the raw encrypted-module read API, then decrypt in-process.
+		// This keeps the vanilla ReadData call-site contract (plaintext `buffer` output),
+		// while validating that one encrypted module is fetched through ReadDirect.
+		const auto module_size_u64 = NumericCast<uint64_t>(ParquetCrypto::LENGTH_BYTES) +
+		                             NumericCast<uint64_t>(ParquetCrypto::NONCE_BYTES) +
+		                             NumericCast<uint64_t>(buffer_size) +
+		                             NumericCast<uint64_t>(ParquetCrypto::TAG_BYTES);
+		ResizeableBuffer encrypted_module;
+		encrypted_module.resize(allocator, NumericCast<idx_t>(module_size_u64));
+		const auto bytes_read = ReadEncryptedModuleRaw(iprot, encrypted_module.ptr, buffer_size);
+		D_ASSERT(bytes_read == module_size_u64);
+
+		const auto encoded_length = Load<uint32_t>(encrypted_module.ptr);
+		if (encoded_length < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
+			throw InvalidInputException("Encrypted parquet module encoded length %u is too small",
+			                            static_cast<unsigned int>(encoded_length));
+		}
+		const auto ciphertext_len =
+		    NumericCast<uint32_t>(encoded_length - ParquetCrypto::NONCE_BYTES - ParquetCrypto::TAG_BYTES);
+		if (ciphertext_len != buffer_size) {
+			throw InvalidInputException(
+			    "Encrypted parquet module ciphertext length mismatch [ciphertext_len=%u, expected=%u]",
+			    static_cast<unsigned int>(ciphertext_len), static_cast<unsigned int>(buffer_size));
+		}
+
+		const_data_ptr_t nonce_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES;
+		const_data_ptr_t ciphertext_ptr = nonce_ptr + ParquetCrypto::NONCE_BYTES;
+		data_ptr_t tag_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES +
+		                     NumericCast<idx_t>(buffer_size);
+
+		const auto &key = parquet_options.encryption_config->GetFooterKey();
+		if (!ParquetCrypto::ValidKey(key)) {
+			throw InvalidInputException("Invalid AES key length for parquet decryption");
+		}
+		// Original compute-only timing (around Initialize/Process/Finalize only) retained for reference.
+		// const auto decrypt_start = std::chrono::steady_clock::now();
+		// Modified: measure the full direct decrypt flow setup+compute (still excluding transport I/O).
+		const auto decrypt_flow_start = std::chrono::steady_clock::now();
+		auto aes_state = encryption_util->CreateEncryptionState(EncryptionTypes::GCM, key.size());
+		aes_state->InitializeDecryption(nonce_ptr, ParquetCrypto::NONCE_BYTES,
+		                                reinterpret_cast<const_data_ptr_t>(key.data()), key.size());
+#ifdef DEBUG
+		const auto decrypted = aes_state->Process(ciphertext_ptr, buffer_size, buffer, buffer_size);
+		D_ASSERT(decrypted == buffer_size);
+#else
+		aes_state->Process(ciphertext_ptr, buffer_size, buffer, buffer_size);
+#endif
+		data_t final_block[ParquetCrypto::BLOCK_SIZE];
+		aes_state->Finalize(final_block, 0, tag_ptr, ParquetCrypto::TAG_BYTES);
+		// const auto decrypt_end = std::chrono::steady_clock::now();
+		const auto decrypt_flow_end = std::chrono::steady_clock::now();
+		AddParquetDecryptionMetrics(
+		    NumericCast<uint64_t>(
+		        std::chrono::duration_cast<std::chrono::nanoseconds>(decrypt_flow_end - decrypt_flow_start)
+		                              .count()));
+		return bytes_read;
 	}
 	return iprot.getTransport()->read(buffer, buffer_size);
+}
+
+// Reads one full encrypted module in a single direct transport read and validates its encoded length.
+uint32_t ParquetReader::ReadEncryptedModuleRaw(duckdb_apache::thrift::protocol::TProtocol &iprot,
+                                               const data_ptr_t buffer, const uint32_t plaintext_size) {
+	if (!parquet_options.encryption_config) {
+		throw InvalidInputException("ReadEncryptedModuleRaw called without parquet encryption_config");
+	}
+	auto &trans = reinterpret_cast<ThriftFileTransport &>(*iprot.getTransport());
+	const uint64_t encoded_payload_size = NumericCast<uint64_t>(ParquetCrypto::NONCE_BYTES) +
+	                                      NumericCast<uint64_t>(plaintext_size) +
+	                                      NumericCast<uint64_t>(ParquetCrypto::TAG_BYTES);
+	const uint64_t module_size_u64 =
+	    NumericCast<uint64_t>(ParquetCrypto::LENGTH_BYTES) + NumericCast<uint64_t>(encoded_payload_size);
+	if (module_size_u64 > NumericLimits<uint32_t>::Maximum()) {
+		throw InvalidInputException("Encrypted parquet module size %llu exceeds uint32_t range",
+		                            static_cast<unsigned long long>(module_size_u64));
+	}
+	const auto module_size = NumericCast<uint32_t>(module_size_u64);
+	// Defensive: fail early with a clear error before issuing the direct read.
+	if (trans.GetLocation() + module_size > trans.GetSize()) {
+		throw InvalidInputException(
+		    "Encrypted parquet module exceeds file bounds [location=%llu, module_size=%u, file_size=%llu]",
+		    static_cast<unsigned long long>(trans.GetLocation()), static_cast<unsigned int>(module_size),
+		    static_cast<unsigned long long>(trans.GetSize()));
+	}
+	// DPK/offload contract: one direct transport read call returns one full encrypted module.
+	auto bytes_read = trans.ReadDirect(buffer, module_size);
+	D_ASSERT(bytes_read == module_size);
+	const auto encoded_length = Load<uint32_t>(buffer);
+	if (encoded_length != encoded_payload_size) {
+		throw InvalidInputException(
+		    "Encrypted parquet module length mismatch [encoded=%u, expected=%u, plaintext_size=%u]",
+		    static_cast<unsigned int>(encoded_length), static_cast<unsigned int>(encoded_payload_size),
+		    static_cast<unsigned int>(plaintext_size));
+	}
+	return bytes_read;
 }
 
 // Adds parquet decryption timing and call count to the query profiler.
@@ -1475,6 +1689,9 @@ bool ParquetReader::ScanInternal(ClientContext &context, ParquetReaderScanState 
 
 				auto &result_vector = result.data[local_idx.GetIndex()];
 				auto &child_reader = root_reader.GetChildReader(column_id);
+				TableScanStringPredicateIOScopeFlags io_scope_flags;
+				ClassifyTableScanStringPredicateIOScope(scan_filter.filter, child_reader.Type(), io_scope_flags);
+				TableScanStringPredicateIOScopeGuard io_scope_guard(io_scope_flags);
 				child_reader.Filter(scan_count, define_ptr, repeat_ptr, result_vector, scan_filter.filter,
 				                    *scan_filter.filter_state, state.sel, filter_count, is_first_filter);
 				need_to_read[local_idx.GetIndex()] = false;

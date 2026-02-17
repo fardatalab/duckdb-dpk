@@ -14,6 +14,7 @@
 #include "parquet_reader.hpp"
 #include "parquet_timestamp.hpp"
 #include "parquet_float16.hpp"
+#include "parquet_crypto.hpp"
 
 #include "reader/row_number_column_reader.hpp"
 #include "snappy.h"
@@ -40,21 +41,98 @@ using duckdb_parquet::PageType;
 using duckdb_parquet::Type;
 
 /**
- * Placeholder for a DPK-integrated "read + decrypt + gzip decompress" path.
- * The current pipeline reads encrypted+compressed bytes, decrypts them in ReadData, then decompresses.
- * This hook should preserve that order while collapsing it into a single call.
- * DPK should also mirror decryption/decompression metrics that are currently recorded elsewhere.
- * TODO: replace this stub with the real DPK implementation.
+ * DPK-oriented "read + decrypt + gzip decompress" path.
+ *
+ * Encrypted mode:
+ * - Reads exactly one raw encrypted module in one direct transport read:
+ *   [4-byte length][12-byte nonce][ciphertext][16-byte tag]
+ * - Decrypts locally with AES-GCM and then inflates GZIP payload into `dst`.
+ *
+ * Unencrypted mode:
+ * - Performs one direct transport read for the compressed payload and inflates it.
+ *
+ * This keeps the call-site contract aligned with offload engines that bind decrypt+decompress
+ * to data produced by a single read handoff.
  */
-static void dpk_read_decomp_decrypt(ParquetReader &reader, duckdb_apache::thrift::protocol::TProtocol &protocol,
-                                    data_ptr_t dst, idx_t dst_size, idx_t src_size) {
-	// Placeholder only: keep the call site visible while DPK wiring is implemented.
-	(void)reader;
-	(void)protocol;
-	(void)dst;
-	(void)dst_size;
-	(void)src_size;
-	throw NotImplementedException("dpk_read_decomp_decrypt placeholder - wire in DPK implementation");
+[[maybe_unused]] static void dpk_read_decomp_decrypt(ParquetReader &reader,
+                                                     duckdb_apache::thrift::protocol::TProtocol &protocol,
+                                                     data_ptr_t dst, idx_t dst_size, idx_t src_size) {
+	D_ASSERT(dst);
+	if (src_size == 0 || dst_size == 0) {
+		throw InvalidInputException("DPK read/decrypt/decompress requires non-zero src/dst sizes");
+	}
+	if (src_size > NumericLimits<uint32_t>::Maximum()) {
+		throw InvalidInputException("DPK source size %llu exceeds uint32_t range",
+		                            static_cast<unsigned long long>(src_size));
+	}
+
+	ResizeableBuffer compressed_data;
+	compressed_data.resize(reader.allocator, src_size);
+
+	if (reader.parquet_options.encryption_config) {
+		const auto raw_module_size = NumericCast<idx_t>(ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES +
+		                                                src_size + ParquetCrypto::TAG_BYTES);
+		ResizeableBuffer encrypted_module;
+		encrypted_module.resize(reader.allocator, raw_module_size);
+		const auto bytes_read =
+		    reader.ReadEncryptedModuleRaw(protocol, encrypted_module.ptr, NumericCast<uint32_t>(src_size));
+		D_ASSERT(bytes_read == raw_module_size);
+
+		const auto encoded_length = Load<uint32_t>(encrypted_module.ptr);
+		if (encoded_length < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
+			throw InvalidInputException("Encrypted parquet module encoded length %u is too small",
+			                            static_cast<unsigned int>(encoded_length));
+		}
+		const auto ciphertext_len =
+		    NumericCast<idx_t>(encoded_length - ParquetCrypto::NONCE_BYTES - ParquetCrypto::TAG_BYTES);
+		if (ciphertext_len != src_size) {
+			throw InvalidInputException(
+			    "Encrypted parquet module ciphertext length mismatch [ciphertext_len=%llu, expected=%llu]",
+			    static_cast<unsigned long long>(ciphertext_len), static_cast<unsigned long long>(src_size));
+		}
+		const_data_ptr_t nonce_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES;
+		const_data_ptr_t ciphertext_ptr = nonce_ptr + ParquetCrypto::NONCE_BYTES;
+		data_ptr_t tag_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + src_size;
+
+		const auto &key = reader.parquet_options.encryption_config->GetFooterKey();
+		if (!ParquetCrypto::ValidKey(key)) {
+			throw InvalidInputException("Invalid AES key length for parquet decryption in DPK path");
+		}
+
+		auto aes_state = reader.encryption_util->CreateEncryptionState(EncryptionTypes::GCM, key.size());
+		const auto decrypt_start = std::chrono::steady_clock::now();
+		aes_state->InitializeDecryption(nonce_ptr, ParquetCrypto::NONCE_BYTES,
+		                                reinterpret_cast<const_data_ptr_t>(key.data()), key.size());
+#ifdef DEBUG
+		const auto decrypted =
+		    aes_state->Process(ciphertext_ptr, src_size, compressed_data.ptr, NumericCast<idx_t>(compressed_data.len));
+		D_ASSERT(decrypted == src_size);
+#else
+		aes_state->Process(ciphertext_ptr, src_size, compressed_data.ptr, NumericCast<idx_t>(compressed_data.len));
+#endif
+		data_t final_block[ParquetCrypto::BLOCK_SIZE];
+		aes_state->Finalize(final_block, 0, tag_ptr, ParquetCrypto::TAG_BYTES);
+		const auto decrypt_end = std::chrono::steady_clock::now();
+		reader.AddParquetDecryptionMetrics(
+		    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(decrypt_end - decrypt_start)
+		                              .count()));
+
+		// Original placeholder retained for reference.
+		// throw NotImplementedException("dpk_read_decomp_decrypt placeholder - wire in DPK implementation");
+	} else {
+		// Unencrypted fallback still uses a single direct transport read for deterministic handoff behavior.
+		auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol.getTransport());
+		const auto bytes_read = trans.ReadDirect(compressed_data.ptr, NumericCast<uint32_t>(src_size));
+		D_ASSERT(bytes_read == src_size);
+	}
+
+	const auto decompress_start = std::chrono::steady_clock::now();
+	MiniZStream s;
+	s.Decompress(const_char_ptr_cast(compressed_data.ptr), src_size, char_ptr_cast(dst), dst_size);
+	const auto decompress_end = std::chrono::steady_clock::now();
+	reader.AddParquetDecompressionMetrics(
+	    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(decompress_end - decompress_start)
+	                              .count()));
 }
 
 const uint64_t ParquetDecodeUtils::BITPACK_MASKS[] = {0,
@@ -363,18 +441,13 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	}
 	*/
 	if (compressed_bytes > 0) {
-		if (chunk->meta_data.codec == CompressionCodec::GZIP) {
-			// DPK placeholder: replaces the ReadData + GZIP DecompressInternal path above.
-			dpk_read_decomp_decrypt(reader, *protocol, block->ptr + uncompressed_bytes,
-			                        page_hdr.uncompressed_page_size - uncompressed_bytes, compressed_bytes);
-		} else {
-			ResizeableBuffer compressed_buffer;
-			compressed_buffer.resize(GetAllocator(), compressed_bytes);
-			reader.ReadData(*protocol, compressed_buffer.ptr, compressed_bytes);
+		// Original active V2 path: keep ReadData + DecompressInternal behavior.
+		ResizeableBuffer compressed_buffer;
+		compressed_buffer.resize(GetAllocator(), compressed_bytes);
+		reader.ReadData(*protocol, compressed_buffer.ptr, compressed_bytes);
 
-			DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
-			                   block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
-		}
+		DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, compressed_bytes,
+		                   block->ptr + uncompressed_bytes, page_hdr.uncompressed_page_size - uncompressed_bytes);
 	}
 }
 
@@ -399,6 +472,15 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 
 	// jason: placeholder for DPK-integrated read + decrypt + gzip decompress path
 
+	// Original V1 path retained for reference.
+	// ResizeableBuffer compressed_buffer;
+	// compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
+	// reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
+	//
+	// DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
+	//                    page_hdr.uncompressed_page_size);
+
+	// Original active V1 path: keep ReadData + DecompressInternal behavior.
 	ResizeableBuffer compressed_buffer;
 	compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
 	reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
