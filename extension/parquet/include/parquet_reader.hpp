@@ -25,6 +25,7 @@
 #include "duckdb/execution/adaptive_filter.hpp"
 
 #include <exception>
+#include <mutex>
 
 namespace duckdb_parquet {
 namespace format {
@@ -200,6 +201,8 @@ public:
 	 */
 	uint32_t ReadEncryptedModuleRaw(duckdb_apache::thrift::protocol::TProtocol &iprot, const data_ptr_t buffer,
 	                                const uint32_t plaintext_size);
+	//! Ensures DDS read2 AES key side channel is set once for this reader (returns false if unavailable/unsupported).
+	bool EnsureDDSRead2AesKeyConfigured();
 
 	//! Accumulate parquet decryption timing and call count for this query.
 	void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
@@ -256,6 +259,8 @@ private:
 
 private:
 	unique_ptr<CachingFileHandle> file_handle;
+	std::once_flag dds_read2_aes_key_once;
+	bool dds_read2_aes_key_ready = false;
 };
 
 } // namespace duckdb

@@ -258,6 +258,10 @@ public:
 	idx_t current_pos = 0;
 
 public:
+	int64_t GetSystemFileDescriptor() const override {
+		return NumericCast<int64_t>(fd);
+	}
+
 	/**
 	 * Closes the file handle, routing Parquet paths through DDS when enabled.
 	 * Adds DDS/POSIX debug prints at the swap points to trace routing decisions.

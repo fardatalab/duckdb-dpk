@@ -31,6 +31,12 @@
 
 #include <cstdio>
 #include <chrono>
+#include <cerrno>
+#include <cstring>
+
+#ifdef DUCKDB_USE_DDS_POSIX
+#include "DDSPosix.h"
+#endif
 
 namespace duckdb {
 
@@ -43,16 +49,14 @@ using duckdb_parquet::Type;
 /**
  * DPK-oriented "read + decrypt + gzip decompress" path.
  *
- * Encrypted mode:
- * - Reads exactly one raw encrypted module in one direct transport read:
+ * Encrypted + DDS mode:
+ * - Reads one encrypted module with a single pread2 stage-0 read:
  *   [4-byte length][12-byte nonce][ciphertext][16-byte tag]
- * - Decrypts locally with AES-GCM and then inflates GZIP payload into `dst`.
+ * - Stage1 AES-GCM window is [ciphertext||tag], with nonce immediately before it.
+ * - Stage2 inflates the stage1 plaintext (deflate payload) into `dst`.
  *
- * Unencrypted mode:
- * - Performs one direct transport read for the compressed payload and inflates it.
- *
- * This keeps the call-site contract aligned with offload engines that bind decrypt+decompress
- * to data produced by a single read handoff.
+ * Strict mode:
+ * - Offload is required; if pread2 offload cannot be used, this throws.
  */
 [[maybe_unused]] static void dpk_read_decomp_decrypt(ParquetReader &reader,
                                                      duckdb_apache::thrift::protocol::TProtocol &protocol,
@@ -66,10 +70,105 @@ using duckdb_parquet::Type;
 		                            static_cast<unsigned long long>(src_size));
 	}
 
-	ResizeableBuffer compressed_data;
-	compressed_data.resize(reader.allocator, src_size);
-
 	if (reader.parquet_options.encryption_config) {
+		auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol.getTransport());
+		const auto module_size_u64 =
+		    NumericCast<uint64_t>(ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + src_size +
+		                          ParquetCrypto::TAG_BYTES);
+		if (module_size_u64 > NumericLimits<size_t>::Maximum()) {
+			throw InvalidInputException("Encrypted parquet module size %llu exceeds size_t range",
+			                            static_cast<unsigned long long>(module_size_u64));
+		}
+		const auto module_size = NumericCast<size_t>(module_size_u64);
+		const auto module_start = trans.GetLocation();
+		if (module_start + module_size_u64 > trans.GetSize()) {
+			throw InvalidInputException(
+			    "Encrypted parquet module exceeds file bounds [location=%llu, module_size=%llu, file_size=%llu]",
+			    static_cast<unsigned long long>(module_start), static_cast<unsigned long long>(module_size_u64),
+			    static_cast<unsigned long long>(trans.GetSize()));
+		}
+
+		// Strict mode: pread2 offload is mandatory for this path.
+#ifdef DUCKDB_USE_DDS_POSIX
+			if (!reader.EnsureDDSRead2AesKeyConfigured()) {
+				throw InvalidInputException(
+				    "Strict DDS offload mode requires read2 AES key configuration, but key setup failed "
+				    "[file=\"%s\"]",
+				    trans.GetPath().c_str());
+			}
+		const auto fd64 = trans.GetSystemFileDescriptor();
+		if (fd64 < 0 || fd64 > NumericCast<int64_t>(NumericLimits<int>::Maximum())) {
+			throw InvalidInputException("Strict DDS offload mode requires a valid system fd for pread2 "
+			                            "[fd=%lld, file=\"%s\"]",
+			                            static_cast<long long>(fd64), trans.GetPath().c_str());
+		}
+
+		// DPK stage-2 kernel expects raw deflate bytes, while parquet GZIP payload is:
+		// [10-byte gzip header][deflate body][8-byte gzip footer].
+		// DuckDB's own MiniZStream path enforces no optional GZIP flags and fixed header/footer sizes.
+		constexpr idx_t gzip_header_bytes = MiniZStream::GZIP_HEADER_MINSIZE;
+		constexpr idx_t gzip_footer_bytes = MiniZStream::GZIP_FOOTER_SIZE;
+		if (src_size <= gzip_header_bytes + gzip_footer_bytes) {
+			throw InvalidInputException(
+			    "Invalid GZIP compressed page size for offload [src_size=%llu, min_required=%llu, file=\"%s\"]",
+			    static_cast<unsigned long long>(src_size),
+			    static_cast<unsigned long long>(gzip_header_bytes + gzip_footer_bytes + 1),
+			    trans.GetPath().c_str());
+		}
+		const auto deflate_body_size = src_size - gzip_header_bytes - gzip_footer_bytes;
+
+		size_t stage_sizes[2] = {NumericCast<size_t>(src_size), NumericCast<size_t>(dst_size)};
+		// Original stage windows retained for reference (these pass full GZIP payload to stage-2).
+		// size_t stage_input_offsets[2] = {NumericCast<size_t>(ParquetCrypto::LENGTH_BYTES +
+		//                                                      ParquetCrypto::NONCE_BYTES),
+		//                                  0};
+		// size_t stage_input_lengths[2] = {NumericCast<size_t>(src_size + ParquetCrypto::TAG_BYTES),
+		//                                  NumericCast<size_t>(src_size)};
+		//
+		// Updated stage windows:
+		// - stage1 AES input: [ciphertext||tag], nonce is immediately before this window.
+		// - stage2 deflate input: skip GZIP header and footer from stage1 plaintext.
+		size_t stage_input_offsets[2] = {NumericCast<size_t>(ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES),
+		                                 NumericCast<size_t>(gzip_header_bytes)};
+		size_t stage_input_lengths[2] = {NumericCast<size_t>(src_size + ParquetCrypto::TAG_BYTES),
+		                                 NumericCast<size_t>(deflate_body_size)};
+
+		const auto offload_start = std::chrono::steady_clock::now();
+		const auto read_bytes = DDSPosix::pread2(NumericCast<int>(fd64), dst, module_size, NumericCast<off_t>(module_start),
+		                                         stage_sizes, stage_input_offsets, stage_input_lengths, 2);
+		const auto offload_end = std::chrono::steady_clock::now();
+		if (read_bytes != NumericCast<ssize_t>(dst_size)) {
+			const auto err = errno;
+			throw InvalidInputException(
+			    "DDS pread2 failed for encrypted page [read_bytes=%lld, expected=%llu, errno=%d (%s), "
+			    "fd=%d, file=\"%s\", offset=%llu, module_size=%llu, stage_sizes=[%llu,%llu], "
+			    "stage_input_offsets=[%llu,%llu], stage_input_lengths=[%llu,%llu]]",
+			    static_cast<long long>(read_bytes), static_cast<unsigned long long>(dst_size), static_cast<int>(err),
+			    strerror(err), NumericCast<int>(fd64), trans.GetPath().c_str(),
+			    static_cast<unsigned long long>(module_start), static_cast<unsigned long long>(module_size_u64),
+			    static_cast<unsigned long long>(stage_sizes[0]), static_cast<unsigned long long>(stage_sizes[1]),
+			    static_cast<unsigned long long>(stage_input_offsets[0]),
+			    static_cast<unsigned long long>(stage_input_offsets[1]),
+			    static_cast<unsigned long long>(stage_input_lengths[0]),
+			    static_cast<unsigned long long>(stage_input_lengths[1]));
+		}
+		reader.AddParquetDecryptionMetrics(
+		    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(offload_end - offload_start)
+		                              .count()));
+		trans.Skip(NumericCast<idx_t>(module_size));
+		return;
+
+#else
+		throw InvalidInputException(
+		    "Strict DDS offload mode requires DUCKDB_USE_DDS_POSIX build support for pread2 "
+		    "[file=\"%s\"]",
+		    trans.GetPath().c_str());
+#endif
+
+		// Original local decrypt+decompress fallback retained for reference.
+		/*
+		ResizeableBuffer compressed_data;
+		compressed_data.resize(reader.allocator, src_size);
 		const auto raw_module_size = NumericCast<idx_t>(ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES +
 		                                                src_size + ParquetCrypto::TAG_BYTES);
 		ResizeableBuffer encrypted_module;
@@ -77,62 +176,27 @@ using duckdb_parquet::Type;
 		const auto bytes_read =
 		    reader.ReadEncryptedModuleRaw(protocol, encrypted_module.ptr, NumericCast<uint32_t>(src_size));
 		D_ASSERT(bytes_read == raw_module_size);
-
-		const auto encoded_length = Load<uint32_t>(encrypted_module.ptr);
-		if (encoded_length < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
-			throw InvalidInputException("Encrypted parquet module encoded length %u is too small",
-			                            static_cast<unsigned int>(encoded_length));
-		}
-		const auto ciphertext_len =
-		    NumericCast<idx_t>(encoded_length - ParquetCrypto::NONCE_BYTES - ParquetCrypto::TAG_BYTES);
-		if (ciphertext_len != src_size) {
-			throw InvalidInputException(
-			    "Encrypted parquet module ciphertext length mismatch [ciphertext_len=%llu, expected=%llu]",
-			    static_cast<unsigned long long>(ciphertext_len), static_cast<unsigned long long>(src_size));
-		}
-		const_data_ptr_t nonce_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES;
-		const_data_ptr_t ciphertext_ptr = nonce_ptr + ParquetCrypto::NONCE_BYTES;
-		data_ptr_t tag_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES + src_size;
-
-		const auto &key = reader.parquet_options.encryption_config->GetFooterKey();
-		if (!ParquetCrypto::ValidKey(key)) {
-			throw InvalidInputException("Invalid AES key length for parquet decryption in DPK path");
-		}
-
-		auto aes_state = reader.encryption_util->CreateEncryptionState(EncryptionTypes::GCM, key.size());
-		const auto decrypt_start = std::chrono::steady_clock::now();
-		aes_state->InitializeDecryption(nonce_ptr, ParquetCrypto::NONCE_BYTES,
-		                                reinterpret_cast<const_data_ptr_t>(key.data()), key.size());
-#ifdef DEBUG
-		const auto decrypted =
-		    aes_state->Process(ciphertext_ptr, src_size, compressed_data.ptr, NumericCast<idx_t>(compressed_data.len));
-		D_ASSERT(decrypted == src_size);
-#else
-		aes_state->Process(ciphertext_ptr, src_size, compressed_data.ptr, NumericCast<idx_t>(compressed_data.len));
-#endif
-		data_t final_block[ParquetCrypto::BLOCK_SIZE];
-		aes_state->Finalize(final_block, 0, tag_ptr, ParquetCrypto::TAG_BYTES);
-		const auto decrypt_end = std::chrono::steady_clock::now();
-		reader.AddParquetDecryptionMetrics(
-		    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(decrypt_end - decrypt_start)
-		                              .count()));
-
-		// Original placeholder retained for reference.
-		// throw NotImplementedException("dpk_read_decomp_decrypt placeholder - wire in DPK implementation");
+		*/
 	} else {
-		// Unencrypted fallback still uses a single direct transport read for deterministic handoff behavior.
+		throw InvalidInputException(
+		    "dpk_read_decomp_decrypt strict offload path called for unencrypted page; this is not supported");
+
+		// Original unencrypted fallback retained for reference.
+		/*
+		ResizeableBuffer compressed_data;
+		compressed_data.resize(reader.allocator, src_size);
 		auto &trans = reinterpret_cast<ThriftFileTransport &>(*protocol.getTransport());
 		const auto bytes_read = trans.ReadDirect(compressed_data.ptr, NumericCast<uint32_t>(src_size));
 		D_ASSERT(bytes_read == src_size);
+		const auto decompress_start = std::chrono::steady_clock::now();
+		MiniZStream s;
+		s.Decompress(const_char_ptr_cast(compressed_data.ptr), src_size, char_ptr_cast(dst), dst_size);
+		const auto decompress_end = std::chrono::steady_clock::now();
+		reader.AddParquetDecompressionMetrics(
+		    NumericCast<uint64_t>(
+		        std::chrono::duration_cast<std::chrono::nanoseconds>(decompress_end - decompress_start).count()));
+		*/
 	}
-
-	const auto decompress_start = std::chrono::steady_clock::now();
-	MiniZStream s;
-	s.Decompress(const_char_ptr_cast(compressed_data.ptr), src_size, char_ptr_cast(dst), dst_size);
-	const auto decompress_end = std::chrono::steady_clock::now();
-	reader.AddParquetDecompressionMetrics(
-	    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(decompress_end - decompress_start)
-	                              .count()));
 }
 
 const uint64_t ParquetDecodeUtils::BITPACK_MASKS[] = {0,
@@ -399,6 +463,9 @@ void ColumnReader::ResetPage() {
 // Prepares a DATA_PAGE_V2 buffer, with an optional DPK gzip decrypt/decompress fast-path.
 void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 	D_ASSERT(page_hdr.type == PageType::DATA_PAGE_V2);
+	throw InvalidInputException(
+	    "DATA_PAGE_V2 is not supported in strict DDS offload mode (encrypted V1 GZIP only currently)");
+	// Original V2 path retained below for reference.
 
 	AllocateBlock(page_hdr.uncompressed_page_size + 1);
 	bool uncompressed = false;
@@ -480,13 +547,25 @@ void ColumnReader::PreparePage(PageHeader &page_hdr) {
 	// DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
 	//                    page_hdr.uncompressed_page_size);
 
-	// Original active V1 path: keep ReadData + DecompressInternal behavior.
-	ResizeableBuffer compressed_buffer;
-	compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
-	reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
+	// Original active V1 path retained for reference; encrypted+GZIP now uses dpk_read_decomp_decrypt().
+	// ResizeableBuffer compressed_buffer;
+	// compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
+	// reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
+	//
+	// DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
+	//                    page_hdr.uncompressed_page_size);
 
-	DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
-	                   page_hdr.uncompressed_page_size);
+	if (chunk->meta_data.codec == CompressionCodec::GZIP && reader.parquet_options.encryption_config) {
+		dpk_read_decomp_decrypt(reader, *protocol, block->ptr, page_hdr.uncompressed_page_size,
+		                        page_hdr.compressed_page_size);
+	} else {
+		ResizeableBuffer compressed_buffer;
+		compressed_buffer.resize(GetAllocator(), page_hdr.compressed_page_size + 1);
+		reader.ReadData(*protocol, compressed_buffer.ptr, page_hdr.compressed_page_size);
+
+		DecompressInternal(chunk->meta_data.codec, compressed_buffer.ptr, page_hdr.compressed_page_size, block->ptr,
+		                   page_hdr.uncompressed_page_size);
+	}
 
 	/* if (chunk->meta_data.codec == CompressionCodec::GZIP) {
 	    // DPK placeholder: replaces the ReadData + GZIP DecompressInternal path above.

@@ -237,6 +237,16 @@ public:
 		return size;
 	}
 
+	//! Returns the underlying OS file descriptor/handle when available, -1 otherwise.
+	int64_t GetSystemFileDescriptor() {
+		return file_handle.GetFileHandle().GetSystemFileDescriptor();
+	}
+
+	//! Returns the underlying file path for diagnostics.
+	string GetPath() const {
+		return file_handle.GetPath();
+	}
+
 private:
 	QueryContext context;
 

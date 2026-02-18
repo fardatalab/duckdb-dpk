@@ -41,8 +41,14 @@
 
 #include <cassert>
 #include <chrono>
+#include <cerrno>
 #include <cstring>
+#include <cstdio>
 #include <sstream>
+
+#ifdef DUCKDB_USE_DDS_POSIX
+#include "DDSPosix.h"
+#endif
 
 namespace duckdb {
 
@@ -1171,12 +1177,27 @@ uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &ipr
 		                             NumericCast<uint64_t>(ParquetCrypto::NONCE_BYTES) +
 		                             NumericCast<uint64_t>(buffer_size) +
 		                             NumericCast<uint64_t>(ParquetCrypto::TAG_BYTES);
-		ResizeableBuffer encrypted_module;
-		encrypted_module.resize(allocator, NumericCast<idx_t>(module_size_u64));
-		const auto bytes_read = ReadEncryptedModuleRaw(iprot, encrypted_module.ptr, buffer_size);
+		// Original per-call temporary buffer retained for reference.
+		// ResizeableBuffer encrypted_module;
+		// encrypted_module.resize(allocator, NumericCast<idx_t>(module_size_u64));
+		// const auto bytes_read = ReadEncryptedModuleRaw(iprot, encrypted_module.ptr, buffer_size);
+		//
+		// Modified: use a thread-local scratch buffer to avoid per-call allocation churn.
+		// Note: a reader-level scratch buffer is unsafe because ParquetReader can be used by
+		// multiple scan threads concurrently; thread-local avoids cross-thread corruption.
+		// We include resize (and potential growth allocation) in the decryption metric,
+		// but keep transport read I/O out of that metric.
+		uint64_t decrypt_compute_ns = 0;
+		const auto resize_start = std::chrono::steady_clock::now();
+		static thread_local ResizeableBuffer encrypted_module_tls_scratch;
+		encrypted_module_tls_scratch.resize(Allocator::DefaultAllocator(), NumericCast<idx_t>(module_size_u64));
+		const auto resize_end = std::chrono::steady_clock::now();
+		decrypt_compute_ns += NumericCast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(resize_end - resize_start).count());
+		const auto bytes_read = ReadEncryptedModuleRaw(iprot, encrypted_module_tls_scratch.ptr, buffer_size);
 		D_ASSERT(bytes_read == module_size_u64);
 
-		const auto encoded_length = Load<uint32_t>(encrypted_module.ptr);
+		const auto encoded_length = Load<uint32_t>(encrypted_module_tls_scratch.ptr);
 		if (encoded_length < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
 			throw InvalidInputException("Encrypted parquet module encoded length %u is too small",
 			                            static_cast<unsigned int>(encoded_length));
@@ -1189,10 +1210,10 @@ uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &ipr
 			    static_cast<unsigned int>(ciphertext_len), static_cast<unsigned int>(buffer_size));
 		}
 
-		const_data_ptr_t nonce_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES;
+		const_data_ptr_t nonce_ptr = encrypted_module_tls_scratch.ptr + ParquetCrypto::LENGTH_BYTES;
 		const_data_ptr_t ciphertext_ptr = nonce_ptr + ParquetCrypto::NONCE_BYTES;
-		data_ptr_t tag_ptr = encrypted_module.ptr + ParquetCrypto::LENGTH_BYTES + ParquetCrypto::NONCE_BYTES +
-		                     NumericCast<idx_t>(buffer_size);
+		data_ptr_t tag_ptr = encrypted_module_tls_scratch.ptr + ParquetCrypto::LENGTH_BYTES +
+		                     ParquetCrypto::NONCE_BYTES + NumericCast<idx_t>(buffer_size);
 
 		const auto &key = parquet_options.encryption_config->GetFooterKey();
 		if (!ParquetCrypto::ValidKey(key)) {
@@ -1200,7 +1221,7 @@ uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &ipr
 		}
 		// Original compute-only timing (around Initialize/Process/Finalize only) retained for reference.
 		// const auto decrypt_start = std::chrono::steady_clock::now();
-		// Modified: measure the full direct decrypt flow setup+compute (still excluding transport I/O).
+		// Modified: measure direct decrypt setup+compute (still excluding transport I/O).
 		const auto decrypt_flow_start = std::chrono::steady_clock::now();
 		auto aes_state = encryption_util->CreateEncryptionState(EncryptionTypes::GCM, key.size());
 		aes_state->InitializeDecryption(nonce_ptr, ParquetCrypto::NONCE_BYTES,
@@ -1213,12 +1234,10 @@ uint32_t ParquetReader::ReadData(duckdb_apache::thrift::protocol::TProtocol &ipr
 #endif
 		data_t final_block[ParquetCrypto::BLOCK_SIZE];
 		aes_state->Finalize(final_block, 0, tag_ptr, ParquetCrypto::TAG_BYTES);
-		// const auto decrypt_end = std::chrono::steady_clock::now();
 		const auto decrypt_flow_end = std::chrono::steady_clock::now();
-		AddParquetDecryptionMetrics(
-		    NumericCast<uint64_t>(
-		        std::chrono::duration_cast<std::chrono::nanoseconds>(decrypt_flow_end - decrypt_flow_start)
-		                              .count()));
+		decrypt_compute_ns += NumericCast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(decrypt_flow_end - decrypt_flow_start).count());
+		AddParquetDecryptionMetrics(decrypt_compute_ns);
 		return bytes_read;
 	}
 	return iprot.getTransport()->read(buffer, buffer_size);
@@ -1242,10 +1261,11 @@ uint32_t ParquetReader::ReadEncryptedModuleRaw(duckdb_apache::thrift::protocol::
 	}
 	const auto module_size = NumericCast<uint32_t>(module_size_u64);
 	// Defensive: fail early with a clear error before issuing the direct read.
-	if (trans.GetLocation() + module_size > trans.GetSize()) {
+	const auto module_start = trans.GetLocation();
+	if (module_start + module_size > trans.GetSize()) {
 		throw InvalidInputException(
 		    "Encrypted parquet module exceeds file bounds [location=%llu, module_size=%u, file_size=%llu]",
-		    static_cast<unsigned long long>(trans.GetLocation()), static_cast<unsigned int>(module_size),
+		    static_cast<unsigned long long>(module_start), static_cast<unsigned int>(module_size),
 		    static_cast<unsigned long long>(trans.GetSize()));
 	}
 	// DPK/offload contract: one direct transport read call returns one full encrypted module.
@@ -1254,11 +1274,54 @@ uint32_t ParquetReader::ReadEncryptedModuleRaw(duckdb_apache::thrift::protocol::
 	const auto encoded_length = Load<uint32_t>(buffer);
 	if (encoded_length != encoded_payload_size) {
 		throw InvalidInputException(
-		    "Encrypted parquet module length mismatch [encoded=%u, expected=%u, plaintext_size=%u]",
+		    "Encrypted parquet module length mismatch [encoded=%u, expected=%u, plaintext_size=%u, module_start=%llu]",
 		    static_cast<unsigned int>(encoded_length), static_cast<unsigned int>(encoded_payload_size),
-		    static_cast<unsigned int>(plaintext_size));
+		    static_cast<unsigned int>(plaintext_size), static_cast<unsigned long long>(module_start));
 	}
 	return bytes_read;
+}
+
+bool ParquetReader::EnsureDDSRead2AesKeyConfigured() {
+#ifndef DUCKDB_USE_DDS_POSIX
+	// No DDS pread2 support in this build.
+	return false;
+#else
+	std::call_once(dds_read2_aes_key_once, [&]() {
+		dds_read2_aes_key_ready = false;
+		if (!parquet_options.encryption_config) {
+			fprintf(stderr, "[Parquet][DDS-DPK][Warning] AES key setup requested without encryption_config\n");
+			return;
+		}
+
+		const auto &key = parquet_options.encryption_config->GetFooterKey();
+		if (key.size() != 32) {
+			fprintf(stderr, "[Parquet][DDS-DPK][Warning] Expected 32-byte AES key for offload, got %llu bytes\n",
+			        static_cast<unsigned long long>(key.size()));
+		}
+		if (key.size() != 16 && key.size() != 32) {
+			fprintf(stderr,
+			        "[Parquet][DDS-DPK][Warning] DDS pread2 AES key size %llu unsupported (expected 16/32); "
+			        "falling back to local decrypt path\n",
+			        static_cast<unsigned long long>(key.size()));
+			return;
+		}
+		// Assumption: DDS copies key material internally during set_read2_aes_key.
+		const auto rc = DDSPosix::set_read2_aes_key(reinterpret_cast<const void *>(key.data()), key.size());
+		if (rc != 0) {
+			const auto err = errno;
+			fprintf(stderr,
+			        "[Parquet][DDS-DPK][Warning] set_read2_aes_key failed rc=%d errno=%d (%s); "
+			        "falling back to local decrypt path\n",
+			        rc, static_cast<int>(err), strerror(err));
+			return;
+		}
+
+		fprintf(stderr, "[Parquet][DDS-DPK] Configured read2 AES key (len=%llu) for file=\"%s\"\n",
+		        static_cast<unsigned long long>(key.size()), GetFileName());
+		dds_read2_aes_key_ready = true;
+	});
+	return dds_read2_aes_key_ready;
+#endif
 }
 
 // Adds parquet decryption timing and call count to the query profiler.

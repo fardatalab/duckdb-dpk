@@ -81,6 +81,8 @@ public:
 	DUCKDB_API bool Trim(idx_t offset_bytes, idx_t length_bytes);
 	DUCKDB_API virtual idx_t GetProgress();
 	DUCKDB_API virtual FileCompressionType GetFileCompressionType();
+	//! Returns an OS-level descriptor/handle when available (e.g., Unix fd); -1 if unavailable.
+	DUCKDB_API virtual int64_t GetSystemFileDescriptor() const;
 
 	DUCKDB_API bool CanSeek();
 	DUCKDB_API bool IsPipe();

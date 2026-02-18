@@ -844,6 +844,11 @@ bool FileHandle::CanSeek() {
 	return file_system.CanSeek();
 }
 
+int64_t FileHandle::GetSystemFileDescriptor() const {
+	// Default: no OS file descriptor/handle exposed.
+	return -1;
+}
+
 FileCompressionType FileHandle::GetFileCompressionType() {
 	return FileCompressionType::UNCOMPRESSED;
 }
