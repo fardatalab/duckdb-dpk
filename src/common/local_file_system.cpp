@@ -718,18 +718,21 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 			const auto wall_start_ns =
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
 			const auto wall_end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count();
-			if (client_context && bytes_read > 0) {
-				// if ((bytes_read > 0)) {
-				// Previous implementation used elapsed time only.
-				// QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
-				//     NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read));
-				QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
-				    NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
-				    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
-			} else {
-				printf("[DDS-IO] Warning: skipping DDS pread metrics update for bytes_read=%lld elapsed_ns=%lld (maybe "
-				       "no client context)\n",
-				       static_cast<long long>(bytes_read), static_cast<long long>(elapsed_ns));
+			if (bytes_read > 0) {
+				if (client_context) {
+					// if ((bytes_read > 0)) {
+					// Previous implementation used elapsed time only.
+					// QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
+					//     NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read));
+					QueryProfiler::Get(*client_context).AddDDSPosixPreadMetrics(
+					    NumericCast<uint64_t>(elapsed_ns), NumericCast<uint64_t>(bytes_read),
+					    NumericCast<uint64_t>(wall_start_ns), NumericCast<uint64_t>(wall_end_ns));
+				} else {
+					// jason: keep a warning for successful reads without context (likely call-path plumbing gap).
+					printf("[DDS-IO] Warning: skipping DDS pread metrics update due to missing client context "
+					       "[bytes_read=%lld elapsed_ns=%lld]\n",
+					       static_cast<long long>(bytes_read), static_cast<long long>(elapsed_ns));
+				}
 			}
 #else
 			// DDS swap candidate: int64_t bytes_read = DDSPosix::pread(fd, read_buffer,
