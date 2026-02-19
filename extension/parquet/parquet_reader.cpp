@@ -44,6 +44,7 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdio>
+#include <mutex>
 #include <sstream>
 
 #ifdef DUCKDB_USE_DDS_POSIX
@@ -208,7 +209,20 @@ static void ParseParquetFooter(data_ptr_t buffer, const string &file_path, idx_t
 			throw InvalidInputException("File '%s' is encrypted, but 'encryption_config' was not set", file_path);
 		}
 	} else {
-		throw InvalidInputException("No magic bytes found at end of file '%s'", file_path);
+		// Original error retained for reference.
+		// throw InvalidInputException("No magic bytes found at end of file '%s'", file_path);
+		// Defensive diagnostics: include the 8 trailer bytes we actually read to help debug short/garbled reads.
+		const auto b0 = static_cast<unsigned int>(buffer[0]);
+		const auto b1 = static_cast<unsigned int>(buffer[1]);
+		const auto b2 = static_cast<unsigned int>(buffer[2]);
+		const auto b3 = static_cast<unsigned int>(buffer[3]);
+		const auto b4 = static_cast<unsigned int>(buffer[4]);
+		const auto b5 = static_cast<unsigned int>(buffer[5]);
+		const auto b6 = static_cast<unsigned int>(buffer[6]);
+		const auto b7 = static_cast<unsigned int>(buffer[7]);
+		throw InvalidInputException(
+		    "No magic bytes found at end of file '%s' [tail_bytes=%02x %02x %02x %02x %02x %02x %02x %02x]",
+		    file_path, b0, b1, b2, b3, b4, b5, b6, b7);
 	}
 
 	// read four-byte footer length from just before the end magic bytes
@@ -1286,6 +1300,19 @@ bool ParquetReader::EnsureDDSRead2AesKeyConfigured() {
 	// No DDS pread2 support in this build.
 	return false;
 #else
+	// Process-wide guard for DDS read2 AES key setup.
+	// Rationale:
+	// - `EnsureDDSRead2AesKeyConfigured` is called per ParquetReader instance.
+	// - DDS read2 key is global on the backend.
+	// - Repeated per-reader "set key" calls create unnecessary control-plane churn and can
+	//   race with in-flight offload traffic if backend key replacement is not strictly immutable.
+	//
+	// This cache ensures we only configure DDS once per process for a given key.
+	static std::mutex dds_read2_global_key_lock;
+	static string dds_read2_global_key_bytes;
+	static bool dds_read2_global_key_is_set = false;
+	static uint32_t dds_read2_global_key_fingerprint = 0;
+
 	std::call_once(dds_read2_aes_key_once, [&]() {
 		dds_read2_aes_key_ready = false;
 		if (!parquet_options.encryption_config) {
@@ -1305,19 +1332,58 @@ bool ParquetReader::EnsureDDSRead2AesKeyConfigured() {
 			        static_cast<unsigned long long>(key.size()));
 			return;
 		}
-		// Assumption: DDS copies key material internally during set_read2_aes_key.
-		const auto rc = DDSPosix::set_read2_aes_key(reinterpret_cast<const void *>(key.data()), key.size());
-		if (rc != 0) {
-			const auto err = errno;
-			fprintf(stderr,
-			        "[Parquet][DDS-DPK][Warning] set_read2_aes_key failed rc=%d errno=%d (%s); "
-			        "falling back to local decrypt path\n",
-			        rc, static_cast<int>(err), strerror(err));
-			return;
+
+		// Diagnostic-only short fingerprint so we can correlate key changes across files/queries
+		// without printing raw key bytes.
+		uint32_t key_fingerprint = 2166136261u;
+		for (const auto b : key) {
+			key_fingerprint ^= static_cast<uint32_t>(static_cast<unsigned char>(b));
+			key_fingerprint *= 16777619u;
 		}
 
-		fprintf(stderr, "[Parquet][DDS-DPK] Configured read2 AES key (len=%llu) for file=\"%s\"\n",
-		        static_cast<unsigned long long>(key.size()), GetFileName());
+		// Original behavior retained for reference: every reader configured DDS key unconditionally.
+		// const auto rc = DDSPosix::set_read2_aes_key(reinterpret_cast<const void *>(key.data()), key.size());
+		// if (rc != 0) { ... return; }
+		//
+		// Updated behavior: serialize and deduplicate process-wide key setup.
+		{
+			std::lock_guard<std::mutex> key_guard(dds_read2_global_key_lock);
+			if (dds_read2_global_key_is_set) {
+				if (dds_read2_global_key_bytes.size() == key.size() &&
+				    std::memcmp(dds_read2_global_key_bytes.data(), key.data(), key.size()) == 0) {
+					// DDS global key already configured with identical bytes.
+					dds_read2_aes_key_ready = true;
+					return;
+				}
+				fprintf(stderr,
+				        "[Parquet][DDS-DPK][Warning] Attempted to configure different read2 AES key "
+				        "(new_fp=0x%08x, active_fp=0x%08x) while offload key is already set; "
+				        "falling back to local decrypt path\n",
+				        key_fingerprint, dds_read2_global_key_fingerprint);
+				return;
+			}
+
+			const auto rc = DDSPosix::set_read2_aes_key(reinterpret_cast<const void *>(key.data()), key.size());
+			if (rc != 0) {
+				const auto err = errno;
+				fprintf(stderr,
+				        "[Parquet][DDS-DPK][Warning] set_read2_aes_key failed rc=%d errno=%d (%s); "
+				        "falling back to local decrypt path\n",
+				        rc, static_cast<int>(err), strerror(err));
+				return;
+			}
+
+			dds_read2_global_key_bytes.assign(key.data(), key.size());
+			dds_read2_global_key_is_set = true;
+			dds_read2_global_key_fingerprint = key_fingerprint;
+		}
+
+		// Original log retained for reference.
+		// fprintf(stderr, "[Parquet][DDS-DPK] Configured read2 AES key (len=%llu) for file=\"%s\"\n",
+		//         static_cast<unsigned long long>(key.size()), GetFileName());
+		fprintf(stderr,
+		        "[Parquet][DDS-DPK] Configured read2 AES key (len=%llu, fp=0x%08x) for file=\"%s\"\n",
+		        static_cast<unsigned long long>(key.size()), key_fingerprint, GetFileName().c_str());
 		dds_read2_aes_key_ready = true;
 	});
 	return dds_read2_aes_key_ready;
