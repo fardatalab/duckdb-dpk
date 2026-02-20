@@ -63,13 +63,12 @@ public:
 
 	//! We limit the uncompressed page size to 100MB
 	//! The max size in Parquet is 2GB, but we choose a more conservative limit
-	// jason: change it to 2MB, DOCA supports up to 2MB only
-	static constexpr const idx_t MAX_UNCOMPRESSED_PAGE_SIZE = 2097152ULL; // 104857600ULL;
+	// jason: change it to 1MB, DOCA supports up to 2MB only
+	static constexpr const idx_t MAX_UNCOMPRESSED_PAGE_SIZE = 1048576ULL; // 104857600ULL;
 	//! Dictionary pages must be below 2GB. Unlike data pages, there's only one dictionary page.
 	//! For this reason we go with a much higher, but still a conservative upper bound of 1GB;
-	// jason: change it to 2MB too
-	static constexpr const idx_t MAX_UNCOMPRESSED_DICT_PAGE_SIZE = 2097152ULL; // 67108864ULL; // 1073741824ULL;
-
+	// jason: change it to 1MB too
+	static constexpr const idx_t MAX_UNCOMPRESSED_DICT_PAGE_SIZE = 1048576ULL; // 67108864ULL; // 1073741824ULL;
 public:
 	unique_ptr<ColumnWriterState> InitializeWriteState(duckdb_parquet::RowGroup &row_group) override;
 	void Prepare(ColumnWriterState &state, ColumnWriterState *parent, Vector &vector, idx_t count,
