@@ -78,6 +78,9 @@ struct ParquetReaderScanState {
 	//! Table filter list
 	vector<ParquetScanFilter> scan_filters;
 
+	//! (optional) Per-scan-state DPK regex filter (cloned from the reader, owns its own cursor)
+	unique_ptr<DPKRegexFilter> dpk_regex_filter;
+
 	//! (optional) pointer to the PhysicalOperator for logging
 	optional_ptr<const PhysicalOperator> op;
 };
@@ -113,6 +116,10 @@ struct ParquetOptions {
 	vector<ParquetColumnDefinition> schema;
 	idx_t explicit_cardinality = 0;
 	bool can_have_nan = false; // if floats or doubles can contain NaN values
+
+	//! (Optional) Pre-computed matching row positions from DPK regex framework.
+	//! When set, the ParquetReader will install a DPKRegexFilter to skip non-matching rows at scan time.
+	shared_ptr<vector<idx_t>> dpk_matching_rows;
 };
 
 struct ParquetOptionsSerialization {

@@ -14,6 +14,7 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include <numeric>
+#include <mutex>
 
 namespace duckdb {
 
@@ -25,6 +26,88 @@ public:
 
 public:
 	virtual idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) = 0;
+};
+
+//! DPKRegexFilter: a DeleteFilter implementation that selects rows matching
+//! pre-computed global row positions (e.g. from an external regex framework).
+//! The matching_rows vector must be sorted in ascending order.
+//! Each scan thread should have its own instance (cursor is not thread-safe).
+class DPKRegexFilter : public DeleteFilter {
+public:
+	explicit DPKRegexFilter(vector<idx_t> matching_rows_p)
+	    : matching_rows(std::move(matching_rows_p)), cursor(0) {
+	}
+
+	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) override {
+		idx_t result_count = 0;
+		row_t end = start_row_index + UnsafeNumericCast<row_t>(count);
+
+		// Advance cursor past rows before this chunk
+		while (cursor < matching_rows.size() && UnsafeNumericCast<row_t>(matching_rows[cursor]) < start_row_index) {
+			cursor++;
+		}
+
+		// Collect matches within this chunk
+		while (cursor < matching_rows.size() && UnsafeNumericCast<row_t>(matching_rows[cursor]) < end) {
+			idx_t local_idx = matching_rows[cursor] - UnsafeNumericCast<idx_t>(start_row_index);
+			result_sel.set_index(result_count++, local_idx);
+			cursor++;
+		}
+		return result_count;
+	}
+
+	//! Get the matching rows vector (for cloning into per-scan-state instances)
+	const vector<idx_t> &GetMatchingRows() const {
+		return matching_rows;
+	}
+
+private:
+	vector<idx_t> matching_rows;
+	idx_t cursor;
+};
+
+//! DPKFilterRegistry: global registry mapping file paths to pre-computed matching row positions.
+//! Used to inject DPK hardware-accelerated regex results into the Parquet scan pipeline.
+//! Usage:
+//!   DPKFilterRegistry::Register("/path/to/file.parquet", matching_positions);
+//!   // ... run query with LIKE predicate removed ...
+//!   DPKFilterRegistry::Unregister("/path/to/file.parquet");
+class DPKFilterRegistry {
+public:
+	static void Register(const string &file_path, shared_ptr<vector<idx_t>> matching_rows) {
+		lock_guard<mutex> lock(GetMutex());
+		GetRegistry()[file_path] = std::move(matching_rows);
+	}
+
+	static void Unregister(const string &file_path) {
+		lock_guard<mutex> lock(GetMutex());
+		GetRegistry().erase(file_path);
+	}
+
+	static shared_ptr<vector<idx_t>> Lookup(const string &file_path) {
+		lock_guard<mutex> lock(GetMutex());
+		auto &registry = GetRegistry();
+		auto it = registry.find(file_path);
+		if (it != registry.end()) {
+			return it->second;
+		}
+		return nullptr;
+	}
+
+	static void Clear() {
+		lock_guard<mutex> lock(GetMutex());
+		GetRegistry().clear();
+	}
+
+private:
+	static unordered_map<string, shared_ptr<vector<idx_t>>> &GetRegistry() {
+		static unordered_map<string, shared_ptr<vector<idx_t>>> registry;
+		return registry;
+	}
+	static mutex &GetMutex() {
+		static mutex mtx;
+		return mtx;
+	}
 };
 
 struct HivePartitioningIndex {

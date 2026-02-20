@@ -43,9 +43,13 @@ endif()
 
 if(DUCKDB_EXTENSION_TPCH_SHOULD_LINK)
   include_directories(../../extension/tpch/include)
+  include_directories(../../extension/parquet/include)
+  include_directories(../../third_party/parquet)
+  include_directories(../../third_party/thrift)
   set(TEST_API_OBJECTS
       ${TEST_API_OBJECTS} test_tpch_with_relations.cpp
       test_tpch_with_streaming.cpp
+      test_dpk_regex_filter.cpp
       serialized_plans/test_plan_serialization_bwc.cpp)
 endif()
 

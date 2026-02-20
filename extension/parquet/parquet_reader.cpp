@@ -884,6 +884,19 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq
 		metadata = std::move(metadata_p);
 	}
 	InitializeSchema(context_p);
+
+	// Install DPK regex filter if pre-computed matching positions are provided
+	if (parquet_options.dpk_matching_rows && !parquet_options.dpk_matching_rows->empty()) {
+		dpk_regex_filter = make_uniq<DPKRegexFilter>(*parquet_options.dpk_matching_rows);
+	}
+
+	// Check the global DPK filter registry for this file
+	if (!dpk_regex_filter) {
+		auto registered = DPKFilterRegistry::Lookup(file.path);
+		if (registered && !registered->empty()) {
+			dpk_regex_filter = make_uniq<DPKRegexFilter>(*registered);
+		}
+	}
 }
 
 bool ParquetReader::MetadataCacheEnabled(ClientContext &context) {
@@ -1251,6 +1264,12 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 	state.root_reader = CreateReader(context);
 	state.define_buf.resize(allocator, STANDARD_VECTOR_SIZE);
 	state.repeat_buf.resize(allocator, STANDARD_VECTOR_SIZE);
+
+	// Clone the DPK regex filter into this scan state (each thread gets its own cursor)
+	if (dpk_regex_filter) {
+		auto &src = static_cast<DPKRegexFilter &>(*dpk_regex_filter);
+		state.dpk_regex_filter = make_uniq<DPKRegexFilter>(src.GetMatchingRows());
+	}
 }
 
 void ParquetReader::Scan(ClientContext &context, ParquetReaderScanState &state, DataChunk &result) {
@@ -1379,6 +1398,7 @@ bool ParquetReader::ScanInternal(ClientContext &context, ParquetReaderScanState 
 	}
 
 	auto &deletion_filter = state.root_reader->Reader().deletion_filter;
+	auto &dpk_regex_filter = state.dpk_regex_filter;
 
 	state.define_buf.zero();
 	state.repeat_buf.zero();
@@ -1388,7 +1408,7 @@ bool ParquetReader::ScanInternal(ClientContext &context, ParquetReaderScanState 
 
 	auto &root_reader = state.root_reader->Cast<StructColumnReader>();
 
-	if (filters || deletion_filter) {
+	if (filters || deletion_filter || dpk_regex_filter) {
 		idx_t filter_count = result.size();
 		D_ASSERT(filter_count == scan_count);
 		vector<bool> need_to_read(column_ids.size(), true);
@@ -1402,6 +1422,15 @@ bool ParquetReader::ScanInternal(ClientContext &context, ParquetReaderScanState 
 			filter_count = deletion_filter->Filter(row_start, scan_count, state.sel);
 			//! FIXME: does this need to be set?
 			//! As part of 'DirectFilter' we also initialize reads of the child readers
+			is_first_filter = false;
+		}
+
+		if (dpk_regex_filter) {
+			if (is_first_filter) {
+				state.sel.Initialize(STANDARD_VECTOR_SIZE);
+			}
+			auto row_start = UnsafeNumericCast<row_t>(state.offset_in_group + state.group_offset);
+			filter_count = dpk_regex_filter->Filter(row_start, scan_count, state.sel);
 			is_first_filter = false;
 		}
 
