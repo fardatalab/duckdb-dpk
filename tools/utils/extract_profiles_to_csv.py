@@ -11,6 +11,7 @@ one JSON file.
 Fields extracted (top-level JSON keys):
 - query_id (derived from filename stem, e.g., query1)
 - cpu_time
+- cumulative_optimizer_timing
 - string_predicate_cpu_time
 - query_name
 - latency
@@ -69,6 +70,9 @@ class ProfileRow:
     # query_id is taken from the filename (stem), e.g., query1
     query_id: str
     cpu_time: Optional[float]
+    # Total time spent in the optimizer pipeline (seconds).
+    # DuckDB emits this as a top-level key in newer profiling JSONs.
+    cumulative_optimizer_timing: Optional[float]
     # Aggregate CPU time for the requested string predicate categories, computed
     # from direct profiler fields:
     # - table_scan_string_constant_comparison_time
@@ -126,6 +130,7 @@ class ProfileRow:
 CSV_FIELDNAMES: List[str] = [
     "query_id",
     "cpu_time",
+    "cumulative_optimizer_timing",
     "string_predicate_cpu_time",
     "string_predicate_read_io_time",
     "table_scan_string_constant_comparison_time",
@@ -277,6 +282,7 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     return ProfileRow(
         query_id=query_id,
         cpu_time=_coerce_float(profile.get("cpu_time")),
+        cumulative_optimizer_timing=_coerce_float(profile.get("cumulative_optimizer_timing")),
         string_predicate_cpu_time=string_predicate_cpu_time,
         string_predicate_read_io_time=string_predicate_read_io_time,
         table_scan_string_constant_comparison_time=table_scan_string_constant_comparison_time,
@@ -349,6 +355,7 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                 {
                     "query_id": row.query_id,
                     "cpu_time": row.cpu_time,
+                    "cumulative_optimizer_timing": row.cumulative_optimizer_timing,
                     "string_predicate_cpu_time": row.string_predicate_cpu_time,
                     "string_predicate_read_io_time": row.string_predicate_read_io_time,
                     "table_scan_string_constant_comparison_time": row.table_scan_string_constant_comparison_time,
