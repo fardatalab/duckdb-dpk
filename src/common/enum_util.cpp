@@ -2760,11 +2760,17 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_P99_LATENCY), "DDS_PREAD_P99_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_THREAD_THROUGHPUT), "DDS_PREAD_THREAD_THROUGHPUT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_TOTAL_THROUGHPUT), "DDS_PREAD_TOTAL_THROUGHPUT" },
-		{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_TIME), "PARQUET_DECOMPRESSION_TIME" },
-		{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_COUNT), "PARQUET_DECOMPRESSION_COUNT" },
-		{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_TIME), "PARQUET_DECRYPTION_TIME" },
-		{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_COUNT), "PARQUET_DECRYPTION_COUNT" },
-		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME" },
+			{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_TIME), "PARQUET_DECOMPRESSION_TIME" },
+			{ static_cast<uint32_t>(MetricsType::PARQUET_DECOMPRESSION_COUNT), "PARQUET_DECOMPRESSION_COUNT" },
+			{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_TIME), "PARQUET_DECRYPTION_TIME" },
+			{ static_cast<uint32_t>(MetricsType::PARQUET_DECRYPTION_COUNT), "PARQUET_DECRYPTION_COUNT" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_READ_TIME), "OFFLOAD_PARQUET_READ_TIME" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_READ_COUNT), "OFFLOAD_PARQUET_READ_COUNT" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME), "OFFLOAD_PARQUET_DECRYPT_TIME" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT), "OFFLOAD_PARQUET_DECRYPT_COUNT" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME), "OFFLOAD_PARQUET_DECOMPRESS_TIME" },
+			{ static_cast<uint32_t>(MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT), "OFFLOAD_PARQUET_DECOMPRESS_COUNT" },
+			{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME" },
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT), "TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME), "TABLE_SCAN_STRING_LIKE_OPERATOR_TIME" },
 		{ static_cast<uint32_t>(MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT), "TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT" },
@@ -2818,8 +2824,8 @@ const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
-	// Updated count (74): includes DDS_PREAD_TIME plus table-scan string predicate read I/O timing metrics.
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 74, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (80): includes offloaded parquet stage timing metrics.
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 80, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
@@ -2830,8 +2836,8 @@ MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
-	// Updated count (74): includes DDS_PREAD_TIME plus table-scan string predicate read I/O timing metrics.
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 74, "MetricsType", value));
+	// Updated count (80): includes offloaded parquet stage timing metrics.
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 80, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

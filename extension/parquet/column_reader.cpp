@@ -146,10 +146,24 @@ using duckdb_parquet::Type;
 				stage_count = 2;
 			}
 
+			// Original offload wall-time instrumentation (mapped to PARQUET_DECRYPTION_TIME) retained for reference.
+			// const auto offload_start = std::chrono::steady_clock::now();
+			// const auto read_bytes = DDSPosix::pread2(NumericCast<int>(fd64), dst, module_size,
+			//                                          NumericCast<off_t>(module_start), stage_sizes, stage_input_offsets,
+			//                                          stage_input_lengths, stage_count);
+			// const auto offload_end = std::chrono::steady_clock::now();
+#if DDS_OFFLOAD_STAGE_TIMING_ENABLED
+			DDSPosix::DDSOffloadStageTimings offload_timings = {};
+			const auto read_bytes = DDSPosix::pread2(
+			    NumericCast<int>(fd64), dst, module_size, NumericCast<off_t>(module_start), stage_sizes,
+			    stage_input_offsets, stage_input_lengths, stage_count, &offload_timings);
+#else
 			const auto offload_start = std::chrono::steady_clock::now();
-			const auto read_bytes = DDSPosix::pread2(NumericCast<int>(fd64), dst, module_size, NumericCast<off_t>(module_start),
-			                                         stage_sizes, stage_input_offsets, stage_input_lengths, stage_count);
+			const auto read_bytes = DDSPosix::pread2(NumericCast<int>(fd64), dst, module_size,
+			                                         NumericCast<off_t>(module_start), stage_sizes, stage_input_offsets,
+			                                         stage_input_lengths, stage_count);
 			const auto offload_end = std::chrono::steady_clock::now();
+#endif
 			if (read_bytes != NumericCast<ssize_t>(dst_size)) {
 				const auto err = errno;
 				throw InvalidInputException(
@@ -166,11 +180,19 @@ using duckdb_parquet::Type;
 				    static_cast<unsigned long long>(stage_input_lengths[0]),
 				    static_cast<unsigned long long>(stage_input_lengths[1]));
 			}
+#if DDS_OFFLOAD_STAGE_TIMING_ENABLED
+			reader.AddOffloadParquetReadMetrics(offload_timings.read_ns);
+			reader.AddOffloadParquetDecryptMetrics(offload_timings.stage1_ns);
+			if (stage_count > 1) {
+				reader.AddOffloadParquetDecompressMetrics(offload_timings.stage2_ns);
+			}
+#else
 			reader.AddParquetDecryptionMetrics(
 			    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(offload_end - offload_start)
-		                              .count()));
-		trans.Skip(NumericCast<idx_t>(module_size));
-		return;
+			                              .count()));
+#endif
+			trans.Skip(NumericCast<idx_t>(module_size));
+			return;
 
 #else
 		throw InvalidInputException(

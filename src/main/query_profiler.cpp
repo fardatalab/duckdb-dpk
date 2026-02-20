@@ -135,6 +135,12 @@ void QueryProfiler::Reset() {
 	query_metrics.dds_pread_max_in_flight = 0;
 	query_metrics.dds_pread_wall_start_ns = 0;
 	query_metrics.dds_pread_wall_end_ns = 0;
+	query_metrics.offload_parquet_read_time_ns = 0;
+	query_metrics.offload_parquet_read_call_count = 0;
+	query_metrics.offload_parquet_decrypt_time_ns = 0;
+	query_metrics.offload_parquet_decrypt_call_count = 0;
+	query_metrics.offload_parquet_decompress_time_ns = 0;
+	query_metrics.offload_parquet_decompress_call_count = 0;
 	query_metrics.table_scan_string_constant_comparison_time_ns = 0;
 	query_metrics.table_scan_string_constant_comparison_count = 0;
 	query_metrics.table_scan_string_like_operator_time_ns = 0;
@@ -560,6 +566,30 @@ void QueryProfiler::EndQuery() {
 				info.metrics[MetricsType::PARQUET_DECOMPRESSION_COUNT] =
 				    Value::UBIGINT(query_metrics.parquet_decompress_call_count);
 			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_READ_TIME)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_READ_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.offload_parquet_read_time_ns) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_READ_COUNT)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_READ_COUNT] =
+				    Value::UBIGINT(query_metrics.offload_parquet_read_call_count);
+			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.offload_parquet_decrypt_time_ns) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT] =
+				    Value::UBIGINT(query_metrics.offload_parquet_decrypt_call_count);
+			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME] =
+				    Value::DOUBLE(static_cast<double>(query_metrics.offload_parquet_decompress_time_ns) * 1e-9);
+			}
+			if (info.Enabled(settings, MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT)) {
+				info.metrics[MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT] =
+				    Value::UBIGINT(query_metrics.offload_parquet_decompress_call_count);
+			}
 			if (info.Enabled(settings, MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME)) {
 				info.metrics[MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME] = Value::DOUBLE(
 				    static_cast<double>(query_metrics.table_scan_string_constant_comparison_time_ns.load()) * 1e-9);
@@ -657,6 +687,30 @@ void QueryProfiler::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 	if (IsEnabled()) {
 		query_metrics.parquet_decompress_time_ns += elapsed_ns;
 		query_metrics.parquet_decompress_call_count++;
+	}
+}
+
+// Records time spent in offloaded parquet stage0 reads.
+void QueryProfiler::AddOffloadParquetReadMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.offload_parquet_read_time_ns += elapsed_ns;
+		query_metrics.offload_parquet_read_call_count++;
+	}
+}
+
+// Records time spent in offloaded parquet stage1 decrypt operations.
+void QueryProfiler::AddOffloadParquetDecryptMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.offload_parquet_decrypt_time_ns += elapsed_ns;
+		query_metrics.offload_parquet_decrypt_call_count++;
+	}
+}
+
+// Records time spent in offloaded parquet stage2 decompress operations.
+void QueryProfiler::AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns) {
+	if (IsEnabled()) {
+		query_metrics.offload_parquet_decompress_time_ns += elapsed_ns;
+		query_metrics.offload_parquet_decompress_call_count++;
 	}
 }
 

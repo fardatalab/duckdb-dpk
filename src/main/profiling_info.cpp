@@ -72,6 +72,12 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::PARQUET_DECOMPRESSION_COUNT,
 	        MetricsType::PARQUET_DECRYPTION_TIME,
 	        MetricsType::PARQUET_DECRYPTION_COUNT,
+	        MetricsType::OFFLOAD_PARQUET_READ_TIME,
+	        MetricsType::OFFLOAD_PARQUET_READ_COUNT,
+	        MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME,
+	        MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT,
+	        MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME,
+	        MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT,
 	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME,
 	        MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT,
 	        MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME,
@@ -120,6 +126,9 @@ void ProfilingInfo::ResetMetrics() {
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_TIME:
 		case MetricsType::PARQUET_DECRYPTION_TIME:
+		case MetricsType::OFFLOAD_PARQUET_READ_TIME:
+		case MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME:
+		case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME:
@@ -147,6 +156,9 @@ void ProfilingInfo::ResetMetrics() {
 #endif
 		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
 		case MetricsType::PARQUET_DECRYPTION_COUNT:
+		case MetricsType::OFFLOAD_PARQUET_READ_COUNT:
+		case MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT:
+		case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT:
 			metrics[metric] = Value::CreateValue<uint64_t>(0);
@@ -273,9 +285,12 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::DDS_PREAD_THREAD_THROUGHPUT:
 		case MetricsType::DDS_PREAD_TOTAL_THROUGHPUT:
 #endif
-		case MetricsType::PARQUET_DECOMPRESSION_TIME:
-		case MetricsType::PARQUET_DECRYPTION_TIME:
-		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
+			case MetricsType::PARQUET_DECOMPRESSION_TIME:
+			case MetricsType::PARQUET_DECRYPTION_TIME:
+			case MetricsType::OFFLOAD_PARQUET_READ_TIME:
+			case MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME:
+			case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME:
+			case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:
 		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_READ_IO_TIME:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME: {
@@ -299,9 +314,12 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_CALL_COUNT:
 #endif
-		case MetricsType::PARQUET_DECOMPRESSION_COUNT:
-		case MetricsType::PARQUET_DECRYPTION_COUNT:
-		case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
+			case MetricsType::PARQUET_DECOMPRESSION_COUNT:
+			case MetricsType::PARQUET_DECRYPTION_COUNT:
+			case MetricsType::OFFLOAD_PARQUET_READ_COUNT:
+			case MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT:
+			case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT:
+			case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
 		case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_COUNT: {
 			yyjson_mut_obj_add_uint(doc, dest, key_ptr, metrics[metric].GetValue<uint64_t>());
 			break;

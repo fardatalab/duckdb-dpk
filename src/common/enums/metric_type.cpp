@@ -244,6 +244,12 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::PARQUET_DECOMPRESSION_COUNT:
         case MetricsType::PARQUET_DECRYPTION_TIME:
         case MetricsType::PARQUET_DECRYPTION_COUNT:
+        case MetricsType::OFFLOAD_PARQUET_READ_TIME:
+        case MetricsType::OFFLOAD_PARQUET_READ_COUNT:
+        case MetricsType::OFFLOAD_PARQUET_DECRYPT_TIME:
+        case MetricsType::OFFLOAD_PARQUET_DECRYPT_COUNT:
+        case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_TIME:
+        case MetricsType::OFFLOAD_PARQUET_DECOMPRESS_COUNT:
         case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_TIME:
         case MetricsType::TABLE_SCAN_STRING_CONSTANT_COMPARISON_COUNT:
         case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_TIME:

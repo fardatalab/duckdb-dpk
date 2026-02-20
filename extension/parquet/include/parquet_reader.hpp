@@ -208,6 +208,12 @@ public:
 	void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
 	//! Accumulate parquet decompression timing and call count for this query.
 	void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
+	//! Accumulate offloaded parquet stage0 read timing and call count for this query.
+	void AddOffloadParquetReadMetrics(uint64_t elapsed_ns);
+	//! Accumulate offloaded parquet stage1 decrypt timing and call count for this query.
+	void AddOffloadParquetDecryptMetrics(uint64_t elapsed_ns);
+	//! Accumulate offloaded parquet stage2 decompress timing and call count for this query.
+	void AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns);
 
 	unique_ptr<BaseStatistics> ReadStatistics(const string &name);
 

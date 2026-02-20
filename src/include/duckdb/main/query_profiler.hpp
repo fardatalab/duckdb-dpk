@@ -124,7 +124,10 @@ struct QueryMetrics {
 	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
 	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), dds_pread_time_ns(0), dds_pread_bytes(0),
 	      dds_pread_call_count(0), dds_pread_in_flight(0), dds_pread_max_in_flight(0),
-	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0),
+	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0), offload_parquet_read_time_ns(0),
+	      offload_parquet_read_call_count(0), offload_parquet_decrypt_time_ns(0),
+	      offload_parquet_decrypt_call_count(0), offload_parquet_decompress_time_ns(0),
+	      offload_parquet_decompress_call_count(0),
 	      table_scan_string_constant_comparison_time_ns(0), table_scan_string_constant_comparison_count(0),
 	      table_scan_string_like_operator_time_ns(0), table_scan_string_like_operator_count(0),
 	      table_scan_string_constant_comparison_read_io_time_ns(0), table_scan_string_like_operator_read_io_time_ns(0) {};
@@ -161,6 +164,18 @@ struct QueryMetrics {
 	atomic<uint64_t> dds_pread_wall_start_ns;
 	//! Wall clock end (steady clock, ns since epoch) for the last DDSPosix::pread in the query
 	atomic<uint64_t> dds_pread_wall_end_ns;
+	//! Total nanoseconds spent in offloaded parquet stage0 (read) operations.
+	atomic<uint64_t> offload_parquet_read_time_ns;
+	//! Number of offloaded parquet stage0 (read) operations.
+	atomic<uint64_t> offload_parquet_read_call_count;
+	//! Total nanoseconds spent in offloaded parquet stage1 (decrypt) operations.
+	atomic<uint64_t> offload_parquet_decrypt_time_ns;
+	//! Number of offloaded parquet stage1 (decrypt) operations.
+	atomic<uint64_t> offload_parquet_decrypt_call_count;
+	//! Total nanoseconds spent in offloaded parquet stage2 (decompress) operations.
+	atomic<uint64_t> offload_parquet_decompress_time_ns;
+	//! Number of offloaded parquet stage2 (decompress) operations.
+	atomic<uint64_t> offload_parquet_decompress_call_count;
 	//! Total nanoseconds spent evaluating table-scan string constant comparisons.
 	atomic<uint64_t> table_scan_string_constant_comparison_time_ns;
 	//! Number of table-scan string constant-comparison predicate evaluation calls.
@@ -214,6 +229,12 @@ public:
 	DUCKDB_API void AddParquetDecryptionMetrics(uint64_t elapsed_ns);
 	//! Adds a parquet decompression timing in nanoseconds and increments the call counter.
 	DUCKDB_API void AddParquetDecompressionMetrics(uint64_t elapsed_ns);
+	//! Adds an offloaded parquet stage0 read timing in nanoseconds and increments the call counter.
+	DUCKDB_API void AddOffloadParquetReadMetrics(uint64_t elapsed_ns);
+	//! Adds an offloaded parquet stage1 decrypt timing in nanoseconds and increments the call counter.
+	DUCKDB_API void AddOffloadParquetDecryptMetrics(uint64_t elapsed_ns);
+	//! Adds an offloaded parquet stage2 decompress timing in nanoseconds and increments the call counter.
+	DUCKDB_API void AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns);
 	//! Adds table-scan string constant-comparison predicate evaluation timing in nanoseconds.
 	DUCKDB_API void AddTableScanStringConstantComparisonMetrics(uint64_t elapsed_ns);
 	//! Adds table-scan LIKE-related predicate evaluation timing in nanoseconds.

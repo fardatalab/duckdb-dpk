@@ -1360,6 +1360,21 @@ void ParquetReader::AddParquetDecompressionMetrics(uint64_t elapsed_ns) {
 	QueryProfiler::Get(context).AddParquetDecompressionMetrics(elapsed_ns);
 }
 
+// Adds offloaded parquet stage0 read timing and call count to the query profiler.
+void ParquetReader::AddOffloadParquetReadMetrics(uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddOffloadParquetReadMetrics(elapsed_ns);
+}
+
+// Adds offloaded parquet stage1 decrypt timing and call count to the query profiler.
+void ParquetReader::AddOffloadParquetDecryptMetrics(uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddOffloadParquetDecryptMetrics(elapsed_ns);
+}
+
+// Adds offloaded parquet stage2 decompress timing and call count to the query profiler.
+void ParquetReader::AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddOffloadParquetDecompressMetrics(elapsed_ns);
+}
+
 static idx_t GetRowGroupOffset(ParquetReader &reader, idx_t group_idx) {
 	idx_t row_group_offset = 0;
 	auto &row_groups = reader.GetFileMetadata()->row_groups;
