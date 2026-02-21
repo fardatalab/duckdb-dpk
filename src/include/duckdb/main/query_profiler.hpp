@@ -29,6 +29,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace duckdb {
 
@@ -119,10 +120,23 @@ private:
 
 //! Top level query metrics.
 struct QueryMetrics {
+	//! Per-table aggregate metrics for DDSPosix::pread2 calls.
+	struct DDSPosixPread2PerTableStats {
+		DDSPosixPread2PerTableStats() : bytes(0), time_ns(0) {
+		}
+		//! Total bytes processed by DDSPosix::pread2 for this table.
+		uint64_t bytes;
+		//! Total elapsed host-thread nanoseconds spent in DDSPosix::pread2 for this table.
+		uint64_t time_ns;
+		//! Set of unique execution threads that issued DDSPosix::pread2 for this table.
+		std::unordered_set<std::thread::id> thread_ids;
+	};
+
 	//! Initialize query-level counters to zero.
 	QueryMetrics()
 	    : total_bytes_read(0), total_bytes_written(0), parquet_decrypt_time_ns(0), parquet_decrypt_call_count(0),
-	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), dds_pread_time_ns(0), dds_pread_bytes(0),
+	      parquet_decompress_time_ns(0), parquet_decompress_call_count(0), dds_pread_time_ns(0),
+	      dds_pread2_time_ns(0), dds_pread_bytes(0),
 	      dds_pread_call_count(0), dds_pread_in_flight(0), dds_pread_max_in_flight(0),
 	      dds_pread_wall_start_ns(0), dds_pread_wall_end_ns(0), offload_parquet_read_time_ns(0),
 	      offload_parquet_read_call_count(0), offload_parquet_decrypt_time_ns(0),
@@ -152,6 +166,8 @@ struct QueryMetrics {
 	atomic<uint64_t> parquet_decompress_call_count;
 	//! Total nanoseconds spent in DDSPosix::pread reads for this query
 	atomic<uint64_t> dds_pread_time_ns;
+	//! Total nanoseconds spent in DDSPosix::pread2 reads for this query
+	atomic<uint64_t> dds_pread2_time_ns;
 	//! Total bytes read via DDSPosix::pread for this query
 	atomic<uint64_t> dds_pread_bytes;
 	//! Number of DDSPosix::pread calls in this query
@@ -188,6 +204,10 @@ struct QueryMetrics {
 	atomic<uint64_t> table_scan_string_constant_comparison_read_io_time_ns;
 	//! Total nanoseconds spent in read I/O while processing table-scan LIKE-related predicates.
 	atomic<uint64_t> table_scan_string_like_operator_read_io_time_ns;
+	//! Mutex protecting `dds_pread2_per_table_stats`.
+	std::mutex dds_pread2_per_table_stats_lock;
+	//! Per-table aggregate bytes/time/thread-id statistics for DDSPosix::pread2 calls.
+	unordered_map<string, DDSPosixPread2PerTableStats> dds_pread2_per_table_stats;
 };
 
 //! QueryProfiler collects the profiling metrics of a query.
@@ -249,6 +269,9 @@ public:
 	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
 	DUCKDB_API void AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes, uint64_t wall_start_ns,
 	                                        uint64_t wall_end_ns);
+	//! Adds DDSPosix::pread2 timing and per-table bytes/thread usage for query-level aggregate metrics.
+	//! No-op when DUCKDB_DDS_PREAD_METRICS_ENABLED is disabled.
+	DUCKDB_API void AddDDSPosixPread2Metrics(const string &table_path, uint64_t bytes, uint64_t elapsed_ns);
 	//! Store a query-global profiling metric for later emission.
 	DUCKDB_API void SetQueryGlobalMetric(MetricsType metric, Value value);
 	//! Marks the start of a DDSPosix::pread call for concurrency tracking.

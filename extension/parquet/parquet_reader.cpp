@@ -1375,6 +1375,11 @@ void ParquetReader::AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns) {
 	QueryProfiler::Get(context).AddOffloadParquetDecompressMetrics(elapsed_ns);
 }
 
+// Adds DDSPosix::pread2 aggregate elapsed timing and per-table bytes/thread usage to the query profiler.
+void ParquetReader::AddDDSPosixPread2Metrics(const string &table_path, uint64_t bytes, uint64_t elapsed_ns) {
+	QueryProfiler::Get(context).AddDDSPosixPread2Metrics(table_path, bytes, elapsed_ns);
+}
+
 static idx_t GetRowGroupOffset(ParquetReader &reader, idx_t group_idx) {
 	idx_t row_group_offset = 0;
 	auto &row_groups = reader.GetFileMetadata()->row_groups;

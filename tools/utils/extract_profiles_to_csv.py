@@ -30,6 +30,10 @@ Fields extracted (top-level JSON keys):
 - table_scan_string_constant_comparison_read_io_time
 - table_scan_string_like_operator_read_io_time
 - dds_pread_time
+- dds_pread2_time
+- pread2_per_table_threads
+- pread2_per_table_bytes
+- pread2_per_table_time
 - dds_pread_total_throughput
 - dds_pread_thread_throughput
 - dds_pread_p99_latency
@@ -107,6 +111,12 @@ class ProfileRow:
     parquet_decryption_count: Optional[int]
     # DDS pread total elapsed I/O time across all pread calls in seconds.
     dds_pread_time: Optional[float]
+    # DDS pread2 total elapsed I/O time across all pread2 calls in seconds.
+    dds_pread2_time: Optional[float]
+    # Per-table pread2 thread/bytes/time metrics in "table=value,table=value" format.
+    pread2_per_table_threads: Optional[str]
+    pread2_per_table_bytes: Optional[str]
+    pread2_per_table_time: Optional[str]
     # DDS pread latency stats and call count (top-level keys in profiler JSON)
     dds_pread_total_throughput: Optional[float]
     dds_pread_thread_throughput: Optional[float]
@@ -149,6 +159,10 @@ CSV_FIELDNAMES: List[str] = [
     "parquet_decryption_time",
     "parquet_decryption_count",
     "dds_pread_time",
+    "dds_pread2_time",
+    "pread2_per_table_threads",
+    "pread2_per_table_bytes",
+    "pread2_per_table_time",
     "dds_pread_total_throughput",
     "dds_pread_thread_throughput",
     "dds_pread_p99_latency",
@@ -301,6 +315,10 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
         parquet_decryption_time=_coerce_float(profile.get("parquet_decryption_time")),
         parquet_decryption_count=_coerce_int(profile.get("parquet_decryption_count")),
         dds_pread_time=_coerce_float(profile.get("dds_pread_time")),
+        dds_pread2_time=_coerce_float(profile.get("dds_pread2_time")),
+        pread2_per_table_threads=_normalize_query_name(profile.get("pread2_per_table_threads")),
+        pread2_per_table_bytes=_normalize_query_name(profile.get("pread2_per_table_bytes")),
+        pread2_per_table_time=_normalize_query_name(profile.get("pread2_per_table_time")),
         # DDS pread metrics (latency stats, throughput, and call count)
         # Extracted only from `dds_pread_*` keys.
         dds_pread_total_throughput=_coerce_float(profile.get("dds_pread_total_throughput")),
@@ -374,6 +392,10 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "parquet_decryption_time": row.parquet_decryption_time,
                     "parquet_decryption_count": row.parquet_decryption_count,
                     "dds_pread_time": row.dds_pread_time,
+                    "dds_pread2_time": row.dds_pread2_time,
+                    "pread2_per_table_threads": row.pread2_per_table_threads,
+                    "pread2_per_table_bytes": row.pread2_per_table_bytes,
+                    "pread2_per_table_time": row.pread2_per_table_time,
                     # DDS pread metrics (latency stats, throughput, and call count)
                     "dds_pread_total_throughput": row.dds_pread_total_throughput,
                     "dds_pread_thread_throughput": row.dds_pread_thread_throughput,

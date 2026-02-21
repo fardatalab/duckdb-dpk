@@ -2752,6 +2752,10 @@ const StringUtil::EnumStringLiteral *GetMetricsTypeValues() {
 			{ static_cast<uint32_t>(MetricsType::TOTAL_BYTES_WRITTEN), "TOTAL_BYTES_WRITTEN" },
 			{ static_cast<uint32_t>(MetricsType::MULTI_FILE_MAX_THREADS), "MULTI_FILE_MAX_THREADS" },
 			{ static_cast<uint32_t>(MetricsType::DDS_PREAD_TIME), "DDS_PREAD_TIME" },
+			{ static_cast<uint32_t>(MetricsType::DDS_PREAD2_TIME), "DDS_PREAD2_TIME" },
+			{ static_cast<uint32_t>(MetricsType::PREAD2_PER_TABLE_THREADS), "PREAD2_PER_TABLE_THREADS" },
+			{ static_cast<uint32_t>(MetricsType::PREAD2_PER_TABLE_BYTES), "PREAD2_PER_TABLE_BYTES" },
+			{ static_cast<uint32_t>(MetricsType::PREAD2_PER_TABLE_TIME), "PREAD2_PER_TABLE_TIME" },
 			{ static_cast<uint32_t>(MetricsType::DDS_PREAD_LATENCY), "DDS_PREAD_LATENCY" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_CALL_COUNT), "DDS_PREAD_CALL_COUNT" },
 		{ static_cast<uint32_t>(MetricsType::DDS_PREAD_MIN_LATENCY), "DDS_PREAD_MIN_LATENCY" },
@@ -2824,8 +2828,8 @@ const char* EnumUtil::ToChars<MetricsType>(MetricsType value) {
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 65, "MetricsType", static_cast<uint32_t>(value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return StringUtil::EnumToString(GetMetricsTypeValues(), 66, "MetricsType", static_cast<uint32_t>(value));
-	// Updated count (80): includes offloaded parquet stage timing metrics.
-	return StringUtil::EnumToString(GetMetricsTypeValues(), 80, "MetricsType", static_cast<uint32_t>(value));
+	// Updated count (84): includes DDS_PREAD2_TIME and pread2 per-table metrics plus offloaded parquet stage timing metrics.
+	return StringUtil::EnumToString(GetMetricsTypeValues(), 84, "MetricsType", static_cast<uint32_t>(value));
 }
 
 template<>
@@ -2836,8 +2840,8 @@ MetricsType EnumUtil::FromString<MetricsType>(const char *value) {
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 65, "MetricsType", value));
 	// Updated count (66) kept for reference; DDS_PREAD_P50_LATENCY adds one more.
 	// return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 66, "MetricsType", value));
-	// Updated count (80): includes offloaded parquet stage timing metrics.
-	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 80, "MetricsType", value));
+	// Updated count (84): includes DDS_PREAD2_TIME and pread2 per-table metrics plus offloaded parquet stage timing metrics.
+	return static_cast<MetricsType>(StringUtil::StringToEnum(GetMetricsTypeValues(), 84, "MetricsType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMultiFileColumnMappingModeValues() {

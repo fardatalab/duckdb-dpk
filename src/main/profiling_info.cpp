@@ -59,6 +59,10 @@ profiler_settings_t ProfilingInfo::DefaultSettings() {
 	        MetricsType::MULTI_FILE_MAX_THREADS,
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	        MetricsType::DDS_PREAD_TIME,
+	        MetricsType::DDS_PREAD2_TIME,
+	        MetricsType::PREAD2_PER_TABLE_THREADS,
+	        MetricsType::PREAD2_PER_TABLE_BYTES,
+	        MetricsType::PREAD2_PER_TABLE_TIME,
 	        MetricsType::DDS_PREAD_LATENCY,
 	        MetricsType::DDS_PREAD_CALL_COUNT,
 	        MetricsType::DDS_PREAD_MIN_LATENCY,
@@ -108,6 +112,9 @@ void ProfilingInfo::ResetMetrics() {
 		switch (metric) {
 		case MetricsType::QUERY_NAME:
 		case MetricsType::MULTI_FILE_MAX_THREADS:
+		case MetricsType::PREAD2_PER_TABLE_THREADS:
+		case MetricsType::PREAD2_PER_TABLE_BYTES:
+		case MetricsType::PREAD2_PER_TABLE_TIME:
 			metrics[metric] = Value::CreateValue("");
 			break;
 		case MetricsType::LATENCY:
@@ -116,6 +123,7 @@ void ProfilingInfo::ResetMetrics() {
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_TIME:
+		case MetricsType::DDS_PREAD2_TIME:
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_MIN_LATENCY:
 		case MetricsType::DDS_PREAD_MAX_LATENCY:
@@ -269,6 +277,9 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::QUERY_NAME:
 		case MetricsType::OPERATOR_NAME:
 		case MetricsType::MULTI_FILE_MAX_THREADS:
+		case MetricsType::PREAD2_PER_TABLE_THREADS:
+		case MetricsType::PREAD2_PER_TABLE_BYTES:
+		case MetricsType::PREAD2_PER_TABLE_TIME:
 			yyjson_mut_obj_add_strcpy(doc, dest, key_ptr, metrics[metric].GetValue<string>().c_str());
 			break;
 		case MetricsType::LATENCY:
@@ -277,6 +288,7 @@ void ProfilingInfo::WriteMetricsToJSON(yyjson_mut_doc *doc, yyjson_mut_val *dest
 		case MetricsType::OPERATOR_TIMING:
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 		case MetricsType::DDS_PREAD_TIME:
+		case MetricsType::DDS_PREAD2_TIME:
 		case MetricsType::DDS_PREAD_LATENCY:
 		case MetricsType::DDS_PREAD_MIN_LATENCY:
 		case MetricsType::DDS_PREAD_MAX_LATENCY:

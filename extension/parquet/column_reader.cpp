@@ -153,17 +153,25 @@ using duckdb_parquet::Type;
 			//                                          stage_input_lengths, stage_count);
 			// const auto offload_end = std::chrono::steady_clock::now();
 #if DDS_OFFLOAD_STAGE_TIMING_ENABLED
+			// Record host-observed elapsed time for aggregate pread2 thread-time, regardless of
+			// whether detailed stage timings are reported by DDS.
+			const auto pread2_start = std::chrono::steady_clock::now();
 			DDSPosix::DDSOffloadStageTimings offload_timings = {};
 			const auto read_bytes = DDSPosix::pread2(
 			    NumericCast<int>(fd64), dst, module_size, NumericCast<off_t>(module_start), stage_sizes,
 			    stage_input_offsets, stage_input_lengths, stage_count, &offload_timings);
 #else
-			const auto offload_start = std::chrono::steady_clock::now();
+			// Record host-observed elapsed time for aggregate pread2 thread-time.
+			const auto pread2_start = std::chrono::steady_clock::now();
 			const auto read_bytes = DDSPosix::pread2(NumericCast<int>(fd64), dst, module_size,
 			                                         NumericCast<off_t>(module_start), stage_sizes, stage_input_offsets,
 			                                         stage_input_lengths, stage_count);
-			const auto offload_end = std::chrono::steady_clock::now();
 #endif
+			const auto pread2_end = std::chrono::steady_clock::now();
+			reader.AddDDSPosixPread2Metrics(
+			    trans.GetPath(), NumericCast<uint64_t>(module_size_u64),
+			    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(pread2_end - pread2_start)
+			                              .count()));
 			if (read_bytes != NumericCast<ssize_t>(dst_size)) {
 				const auto err = errno;
 				throw InvalidInputException(
@@ -188,7 +196,7 @@ using duckdb_parquet::Type;
 			}
 #else
 			reader.AddParquetDecryptionMetrics(
-			    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(offload_end - offload_start)
+			    NumericCast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(pread2_end - pread2_start)
 			                              .count()));
 #endif
 			trans.Skip(NumericCast<idx_t>(module_size));

@@ -214,6 +214,8 @@ public:
 	void AddOffloadParquetDecryptMetrics(uint64_t elapsed_ns);
 	//! Accumulate offloaded parquet stage2 decompress timing and call count for this query.
 	void AddOffloadParquetDecompressMetrics(uint64_t elapsed_ns);
+	//! Accumulate DDS pread2 aggregate elapsed time and per-table bytes/thread usage for this query.
+	void AddDDSPosixPread2Metrics(const string &table_path, uint64_t bytes, uint64_t elapsed_ns);
 
 	unique_ptr<BaseStatistics> ReadStatistics(const string &name);
 

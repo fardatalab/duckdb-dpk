@@ -258,6 +258,10 @@ bool MetricsUtils::IsQueryGlobalMetric(MetricsType type) {
         case MetricsType::TABLE_SCAN_STRING_LIKE_OPERATOR_READ_IO_TIME:
         case MetricsType::MULTI_FILE_MAX_THREADS:
         case MetricsType::DDS_PREAD_TIME:
+        case MetricsType::DDS_PREAD2_TIME:
+        case MetricsType::PREAD2_PER_TABLE_THREADS:
+        case MetricsType::PREAD2_PER_TABLE_BYTES:
+        case MetricsType::PREAD2_PER_TABLE_TIME:
         case MetricsType::DDS_PREAD_LATENCY:
         case MetricsType::DDS_PREAD_CALL_COUNT:
         case MetricsType::DDS_PREAD_MIN_LATENCY:

@@ -40,6 +40,58 @@ static thread_local idx_t table_filter_expression_scope_depth = 0;
 static thread_local idx_t table_scan_string_constant_comparison_io_scope_depth = 0;
 // Thread-local nesting depth for attributing read I/O to LIKE-related predicates.
 static thread_local idx_t table_scan_string_like_operator_io_scope_depth = 0;
+
+enum class Pread2PerTableValueType : uint8_t { THREAD_COUNT, BYTES, TIME_NS };
+
+// Normalizes a table/file path into a stable basename for per-table pread2 metrics.
+static string NormalizePread2PerTablePath(const string &table_path) {
+	const auto last_sep = table_path.find_last_of("/\\");
+	if (last_sep == string::npos) {
+		return table_path;
+	}
+	return table_path.substr(last_sep + 1);
+}
+
+// Formats per-table pread2 aggregate metrics as "table_a=V,table_b=V".
+static string FormatPread2PerTableMetric(
+    const unordered_map<string, QueryMetrics::DDSPosixPread2PerTableStats> &stats,
+    Pread2PerTableValueType value_type) {
+	if (stats.empty()) {
+		return string();
+	}
+	vector<string> table_names;
+	table_names.reserve(stats.size());
+	for (const auto &entry : stats) {
+		table_names.push_back(entry.first);
+	}
+	std::sort(table_names.begin(), table_names.end());
+
+	string formatted_metric;
+	for (const auto &table_name : table_names) {
+		const auto stat_entry = stats.find(table_name);
+		if (stat_entry == stats.end()) {
+			continue;
+		}
+		const auto &table_stats = stat_entry->second;
+		uint64_t value = 0;
+		switch (value_type) {
+		case Pread2PerTableValueType::THREAD_COUNT:
+			value = NumericCast<uint64_t>(table_stats.thread_ids.size());
+			break;
+		case Pread2PerTableValueType::BYTES:
+			value = table_stats.bytes;
+			break;
+		case Pread2PerTableValueType::TIME_NS:
+			value = table_stats.time_ns;
+			break;
+		}
+		if (!formatted_metric.empty()) {
+			formatted_metric += ",";
+		}
+		formatted_metric += table_name + "=" + std::to_string(value);
+	}
+	return formatted_metric;
+}
 } // namespace
 
 QueryProfiler::QueryProfiler(ClientContext &context_p)
@@ -129,6 +181,7 @@ void QueryProfiler::Reset() {
 	query_metrics.parquet_decompress_time_ns = 0;
 	query_metrics.parquet_decompress_call_count = 0;
 	query_metrics.dds_pread_time_ns = 0;
+	query_metrics.dds_pread2_time_ns = 0;
 	query_metrics.dds_pread_bytes = 0;
 	query_metrics.dds_pread_call_count = 0;
 	query_metrics.dds_pread_in_flight = 0;
@@ -147,6 +200,11 @@ void QueryProfiler::Reset() {
 	query_metrics.table_scan_string_like_operator_count = 0;
 	query_metrics.table_scan_string_constant_comparison_read_io_time_ns = 0;
 	query_metrics.table_scan_string_like_operator_read_io_time_ns = 0;
+	// Reset per-table pread2 aggregates for the new query.
+	{
+		lock_guard<std::mutex> per_table_guard(query_metrics.dds_pread2_per_table_stats_lock);
+		query_metrics.dds_pread2_per_table_stats.clear();
+	}
 	// DDS pread metrics are optional and can be compile-time disabled.
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
 	// Original per-thread stats reset (mutex-based); kept for reference.
@@ -325,23 +383,55 @@ void QueryProfiler::EndQuery() {
 			}
 			// DDS pread metrics are optional and can be compile-time disabled.
 #if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
-			if (info.Enabled(settings, MetricsType::DDS_PREAD_TIME)) {
-				info.metrics[MetricsType::DDS_PREAD_TIME] =
-				    Value::DOUBLE(static_cast<double>(query_metrics.dds_pread_time_ns.load()) * 1e-9);
-			}
-			if (info.Enabled(settings, MetricsType::DDS_PREAD_LATENCY)) {
-				double latency_seconds = 0.0;
-				const auto call_count = query_metrics.dds_pread_call_count.load();
-				if (call_count != 0) {
-					latency_seconds = static_cast<double>(query_metrics.dds_pread_time_ns.load()) * 1e-9 /
-					                  static_cast<double>(call_count);
+				if (info.Enabled(settings, MetricsType::DDS_PREAD_TIME)) {
+					info.metrics[MetricsType::DDS_PREAD_TIME] =
+					    Value::DOUBLE(static_cast<double>(query_metrics.dds_pread_time_ns.load()) * 1e-9);
 				}
-				info.metrics[MetricsType::DDS_PREAD_LATENCY] = Value::DOUBLE(latency_seconds);
-			}
-			if (info.Enabled(settings, MetricsType::DDS_PREAD_CALL_COUNT)) {
-				info.metrics[MetricsType::DDS_PREAD_CALL_COUNT] =
-				    Value::UBIGINT(query_metrics.dds_pread_call_count.load());
-			}
+				if (info.Enabled(settings, MetricsType::DDS_PREAD2_TIME)) {
+					info.metrics[MetricsType::DDS_PREAD2_TIME] =
+					    Value::DOUBLE(static_cast<double>(query_metrics.dds_pread2_time_ns.load()) * 1e-9);
+				}
+				const bool need_pread2_per_table_metrics =
+				    info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_THREADS) ||
+				    info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_BYTES) ||
+				    info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_TIME);
+				string per_table_threads;
+				string per_table_bytes;
+				string per_table_time;
+				if (need_pread2_per_table_metrics) {
+					lock_guard<std::mutex> per_table_guard(query_metrics.dds_pread2_per_table_stats_lock);
+					per_table_threads =
+					    FormatPread2PerTableMetric(query_metrics.dds_pread2_per_table_stats,
+					                               Pread2PerTableValueType::THREAD_COUNT);
+					per_table_bytes =
+					    FormatPread2PerTableMetric(query_metrics.dds_pread2_per_table_stats,
+					                               Pread2PerTableValueType::BYTES);
+					per_table_time =
+					    FormatPread2PerTableMetric(query_metrics.dds_pread2_per_table_stats,
+					                               Pread2PerTableValueType::TIME_NS);
+				}
+				if (info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_THREADS)) {
+					info.metrics[MetricsType::PREAD2_PER_TABLE_THREADS] = Value::CreateValue(per_table_threads);
+				}
+				if (info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_BYTES)) {
+					info.metrics[MetricsType::PREAD2_PER_TABLE_BYTES] = Value::CreateValue(per_table_bytes);
+				}
+				if (info.Enabled(settings, MetricsType::PREAD2_PER_TABLE_TIME)) {
+					info.metrics[MetricsType::PREAD2_PER_TABLE_TIME] = Value::CreateValue(per_table_time);
+				}
+				if (info.Enabled(settings, MetricsType::DDS_PREAD_LATENCY)) {
+					double latency_seconds = 0.0;
+					const auto call_count = query_metrics.dds_pread_call_count.load();
+					if (call_count != 0) {
+						latency_seconds = static_cast<double>(query_metrics.dds_pread_time_ns.load()) * 1e-9 /
+						                  static_cast<double>(call_count);
+					}
+					info.metrics[MetricsType::DDS_PREAD_LATENCY] = Value::DOUBLE(latency_seconds);
+				}
+				if (info.Enabled(settings, MetricsType::DDS_PREAD_CALL_COUNT)) {
+					info.metrics[MetricsType::DDS_PREAD_CALL_COUNT] =
+					    Value::UBIGINT(query_metrics.dds_pread_call_count.load());
+				}
 			// Original tail-latency aggregation (min/max/p99 + ad-hoc p50 print) kept for reference.
 			// const bool need_tail_latency =
 			//     info.Enabled(settings, MetricsType::DDS_PREAD_MIN_LATENCY) ||
@@ -826,6 +916,27 @@ void QueryProfiler::AddDDSPosixPreadMetrics(uint64_t elapsed_ns, uint64_t bytes,
 	(void)bytes;
 	(void)wall_start_ns;
 	(void)wall_end_ns;
+#endif
+}
+
+// Aggregates DDSPosix pread2 timing and per-table metrics for the current query.
+void QueryProfiler::AddDDSPosixPread2Metrics(const string &table_path, uint64_t bytes, uint64_t elapsed_ns) {
+	// DDS pread metrics are optional and can be compile-time disabled.
+#if defined(DUCKDB_DDS_PREAD_METRICS_ENABLED) && (DUCKDB_DDS_PREAD_METRICS_ENABLED)
+	if (!IsEnabled()) {
+		return;
+	}
+	query_metrics.dds_pread2_time_ns += elapsed_ns;
+	const auto table_name = NormalizePread2PerTablePath(table_path);
+	lock_guard<std::mutex> per_table_guard(query_metrics.dds_pread2_per_table_stats_lock);
+	auto &table_stats = query_metrics.dds_pread2_per_table_stats[table_name];
+	table_stats.bytes += bytes;
+	table_stats.time_ns += elapsed_ns;
+	table_stats.thread_ids.insert(std::this_thread::get_id());
+#else
+	(void)table_path;
+	(void)bytes;
+	(void)elapsed_ns;
 #endif
 }
 
