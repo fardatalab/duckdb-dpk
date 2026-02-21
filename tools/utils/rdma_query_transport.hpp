@@ -11,8 +11,10 @@ namespace rdma_query {
 
 static const uint32_t kFrameMagic = 0x52514442; // "RQDB"
 static const uint16_t kFrameVersion = 1;
-static const size_t kMaxFramePayloadBytes = 1UL << 20; // 1 MiB
-static const size_t kRecvDepth = 16;
+// 128 MiB chunks (>= 100 MB as requested) to avoid splitting large text results.
+static const size_t kMaxFramePayloadBytes = 128UL << 20;
+// Keep the posted receive ring small because each slot now reserves a large pinned MR region.
+static const size_t kRecvDepth = 2;
 
 enum class MessageType : uint16_t {
 	QUERY_TEXT = 1,
@@ -144,4 +146,3 @@ private:
 };
 
 } // namespace rdma_query
-
