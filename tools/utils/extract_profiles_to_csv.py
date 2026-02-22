@@ -12,6 +12,7 @@ Fields extracted (top-level JSON keys):
 - query_id (derived from filename stem, e.g., query1)
 - cpu_time
 - cumulative_optimizer_timing
+- query_parsing_optim_time
 - string_predicate_cpu_time
 - query_name
 - latency
@@ -42,6 +43,7 @@ Fields extracted (top-level JSON keys):
 - dds_pread_min_latency
 - dds_pread_latency
 - dds_pread_call_count
+- pread2_throughput_mb_s
 - pread_total_throughput
 - pread_thread_throughput
 - pread_p99_latency
@@ -74,9 +76,11 @@ class ProfileRow:
     # query_id is taken from the filename (stem), e.g., query1
     query_id: str
     cpu_time: Optional[float]
-    # Total time spent in the optimizer pipeline (seconds).
-    # DuckDB emits this as a top-level key in newer profiling JSONs.
+    # Total time spent in optimizer pipeline (seconds).
     cumulative_optimizer_timing: Optional[float]
+    # Combined planning/optimizer phase timing:
+    #   planner + all_optimizers
+    query_parsing_optim_time: Optional[float]
     # Aggregate CPU time for the requested string predicate categories, computed
     # from direct profiler fields:
     # - table_scan_string_constant_comparison_time
@@ -113,7 +117,7 @@ class ProfileRow:
     dds_pread_time: Optional[float]
     # DDS pread2 total elapsed I/O time across all pread2 calls in seconds.
     dds_pread2_time: Optional[float]
-    # Per-table pread2 thread/bytes/time metrics in "table=value,table=value" format.
+    # Per-table pread2 aggregate metrics in "table=value,table=value" form.
     pread2_per_table_threads: Optional[str]
     pread2_per_table_bytes: Optional[str]
     pread2_per_table_time: Optional[str]
@@ -126,6 +130,9 @@ class ProfileRow:
     dds_pread_min_latency: Optional[float]
     dds_pread_latency: Optional[float]
     dds_pread_call_count: Optional[int]
+    # Estimated pread2 throughput in MB/s derived from per-table pread2 metrics:
+    #   total_bytes / sum(table_time_ns / table_threads)
+    pread2_throughput_mb_s: Optional[float]
     # Legacy/orig pread metrics (without dds_ prefix)
     pread_total_throughput: Optional[float]
     pread_thread_throughput: Optional[float]
@@ -141,6 +148,7 @@ CSV_FIELDNAMES: List[str] = [
     "query_id",
     "cpu_time",
     "cumulative_optimizer_timing",
+    "query_parsing_optim_time",
     "string_predicate_cpu_time",
     "string_predicate_read_io_time",
     "table_scan_string_constant_comparison_time",
@@ -171,6 +179,7 @@ CSV_FIELDNAMES: List[str] = [
     "dds_pread_min_latency",
     "dds_pread_latency",
     "dds_pread_call_count",
+    "pread2_throughput_mb_s",
     "pread_total_throughput",
     "pread_thread_throughput",
     "pread_p99_latency",
@@ -244,6 +253,61 @@ def _coerce_float(value: Any) -> Optional[float]:
     return None
 
 
+def _parse_table_metric_map(metric: Any) -> Dict[str, float]:
+    """Parse 'table=value,table=value' strings into a numeric map."""
+    if metric is None:
+        return {}
+    if not isinstance(metric, str):
+        metric = str(metric)
+
+    parsed: Dict[str, float] = {}
+    for raw_entry in metric.split(","):
+        entry = raw_entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        table_name, raw_value = entry.split("=", 1)
+        table_name = table_name.strip()
+        if not table_name:
+            continue
+        value = _coerce_float(raw_value.strip())
+        if value is None:
+            continue
+        parsed[table_name] = value
+    return parsed
+
+
+def _compute_pread2_throughput_mb_s(profile: Dict[str, Any]) -> Optional[float]:
+    """Estimate pread2 throughput (MB/s) from per-table bytes/time/thread metrics."""
+    bytes_map = _parse_table_metric_map(profile.get("pread2_per_table_bytes"))
+    time_map = _parse_table_metric_map(profile.get("pread2_per_table_time"))
+    threads_map = _parse_table_metric_map(profile.get("pread2_per_table_threads"))
+
+    if not bytes_map or not time_map:
+        return None
+
+    total_bytes = 0.0
+    total_effective_time_ns = 0.0
+    for table_name, bytes_value in bytes_map.items():
+        time_ns = time_map.get(table_name)
+        if time_ns is None or time_ns <= 0:
+            continue
+
+        # Fall back to one thread when the table-specific thread count is missing.
+        thread_count = threads_map.get(table_name, 1.0)
+        if thread_count <= 0:
+            thread_count = 1.0
+
+        total_bytes += bytes_value
+        total_effective_time_ns += time_ns / thread_count
+
+    if total_bytes <= 0 or total_effective_time_ns <= 0:
+        return None
+
+    bytes_per_second = total_bytes / (total_effective_time_ns / 1e9)
+    mb_per_second = bytes_per_second / (1024.0 * 1024.0)
+    return mb_per_second
+
+
 def load_profile_json(path: Path) -> Dict[str, Any]:
     # Loads a single DuckDB JSON profiling output.
     with path.open("r", encoding="utf-8") as f:
@@ -293,10 +357,21 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     else:
         string_predicate_read_io_time = None
 
+    planner_time = _coerce_float(profile.get("planner"))
+    all_optimizers_time = _coerce_float(profile.get("all_optimizers"))
+    # If either side is present, sum with missing side treated as zero.
+    if planner_time is not None or all_optimizers_time is not None:
+        query_parsing_optim_time = (planner_time or 0.0) + (all_optimizers_time or 0.0)
+    else:
+        query_parsing_optim_time = None
+
+    pread2_throughput_mb_s = _compute_pread2_throughput_mb_s(profile)
+
     return ProfileRow(
         query_id=query_id,
         cpu_time=_coerce_float(profile.get("cpu_time")),
         cumulative_optimizer_timing=_coerce_float(profile.get("cumulative_optimizer_timing")),
+        query_parsing_optim_time=query_parsing_optim_time,
         string_predicate_cpu_time=string_predicate_cpu_time,
         string_predicate_read_io_time=string_predicate_read_io_time,
         table_scan_string_constant_comparison_time=table_scan_string_constant_comparison_time,
@@ -329,6 +404,7 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
         dds_pread_min_latency=_coerce_float(profile.get("dds_pread_min_latency")),
         dds_pread_latency=_coerce_float(profile.get("dds_pread_latency")),
         dds_pread_call_count=_coerce_int(profile.get("dds_pread_call_count")),
+        pread2_throughput_mb_s=pread2_throughput_mb_s,
         # Legacy/orig pread metrics (without dds_ prefix)
         # Extracted only from `pread_*` keys.
         pread_total_throughput=_coerce_float(profile.get("pread_total_throughput")),
@@ -374,6 +450,7 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "query_id": row.query_id,
                     "cpu_time": row.cpu_time,
                     "cumulative_optimizer_timing": row.cumulative_optimizer_timing,
+                    "query_parsing_optim_time": row.query_parsing_optim_time,
                     "string_predicate_cpu_time": row.string_predicate_cpu_time,
                     "string_predicate_read_io_time": row.string_predicate_read_io_time,
                     "table_scan_string_constant_comparison_time": row.table_scan_string_constant_comparison_time,
@@ -405,6 +482,7 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "dds_pread_min_latency": row.dds_pread_min_latency,
                     "dds_pread_latency": row.dds_pread_latency,
                     "dds_pread_call_count": row.dds_pread_call_count,
+                    "pread2_throughput_mb_s": row.pread2_throughput_mb_s,
                     # Legacy/orig pread metrics (without dds_ prefix)
                     "pread_total_throughput": row.pread_total_throughput,
                     "pread_thread_throughput": row.pread_thread_throughput,
