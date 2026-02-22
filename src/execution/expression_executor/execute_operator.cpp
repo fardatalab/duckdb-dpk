@@ -1,8 +1,32 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/profiler.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include <cstdio>
 
 namespace duckdb {
+
+namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
+
+// Detect whether this operator expression should be counted as a string
+// constant-comparison predicate in table-scan expression-filter scope.
+static bool ShouldProfileStringInOperator(const BoundOperatorExpression &expr) {
+	auto expression_type = expr.GetExpressionType();
+	if (expression_type != ExpressionType::COMPARE_IN && expression_type != ExpressionType::COMPARE_NOT_IN) {
+		return false;
+	}
+	if (expr.children.empty()) {
+		return false;
+	}
+	return expr.children[0]->return_type.InternalType() == PhysicalType::VARCHAR;
+}
+
+} // namespace
 
 unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundOperatorExpression &expr,
                                                                 ExpressionExecutorState &root) {
@@ -21,6 +45,18 @@ void ExpressionExecutor::Execute(const BoundOperatorExpression &expr, Expression
 	// IN has n children
 	auto expression_type = expr.GetExpressionType();
 	if (expression_type == ExpressionType::COMPARE_IN || expression_type == ExpressionType::COMPARE_NOT_IN) {
+		const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+		const bool should_profile_string_in = in_table_filter_scope && ShouldProfileStringInOperator(expr);
+		const bool has_context = state && state->HasContext();
+		if (should_profile_string_in && !has_context) {
+			printf("[WARN] Table-scan string constant-comparison profiling skipped in ExpressionExecutor::Execute(IN): missing ExpressionState context\n");
+		}
+
+		Profiler profiler;
+		if (should_profile_string_in && has_context) {
+			profiler.Start();
+		}
+
 		if (expr.children.size() < 2) {
 			throw InvalidInputException("IN needs at least two children");
 		}
@@ -60,6 +96,10 @@ void ExpressionExecutor::Execute(const BoundOperatorExpression &expr, Expression
 		} else {
 			// directly use the result
 			result.Reference(intermediate);
+		}
+		if (should_profile_string_in && has_context) {
+			profiler.End();
+			QueryProfiler::Get(state->GetContext()).AddTableScanStringConstantComparisonMetrics(ElapsedNs(profiler));
 		}
 	} else if (expression_type == ExpressionType::OPERATOR_COALESCE) {
 		SelectionVector sel_a(count);

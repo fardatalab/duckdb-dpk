@@ -25,7 +25,9 @@
 #include "duckdb/common/hive_partitioning.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
@@ -114,6 +116,49 @@ static bool ContainsProfiledLikeFunction(const Expression &expr) {
 	return contains_like_function;
 }
 
+static bool IsStringComparisonExpressionType(ExpressionType type) {
+	switch (type) {
+	case ExpressionType::COMPARE_EQUAL:
+	case ExpressionType::COMPARE_NOTEQUAL:
+	case ExpressionType::COMPARE_LESSTHAN:
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+	case ExpressionType::COMPARE_GREATERTHAN:
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+	case ExpressionType::COMPARE_IN:
+	case ExpressionType::COMPARE_NOT_IN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool ContainsStringConstantComparisonExpression(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COMPARISON) {
+		auto &cmp_expr = expr.Cast<BoundComparisonExpression>();
+		if (IsStringComparisonExpressionType(cmp_expr.GetExpressionType())) {
+			if (cmp_expr.left->return_type.InternalType() == PhysicalType::VARCHAR ||
+			    cmp_expr.right->return_type.InternalType() == PhysicalType::VARCHAR) {
+				return true;
+			}
+		}
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
+		auto &op_expr = expr.Cast<BoundOperatorExpression>();
+		if (IsStringComparisonExpressionType(op_expr.GetExpressionType()) && !op_expr.children.empty() &&
+		    op_expr.children[0]->return_type.InternalType() == PhysicalType::VARCHAR) {
+			return true;
+		}
+	}
+
+	bool contains_string_comparison = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!contains_string_comparison && ContainsStringConstantComparisonExpression(child)) {
+			contains_string_comparison = true;
+		}
+	});
+	return contains_string_comparison;
+}
+
 static void ClassifyTableScanStringPredicateIOScope(const TableFilter &filter, const LogicalType &column_type,
                                                     TableScanStringPredicateIOScopeFlags &scope_flags) {
 	switch (filter.filter_type) {
@@ -140,8 +185,13 @@ static void ClassifyTableScanStringPredicateIOScope(const TableFilter &filter, c
 	case TableFilterType::EXPRESSION_FILTER: {
 		if (IsStringColumnType(column_type)) {
 			auto &expr_filter = filter.Cast<ExpressionFilter>();
-			if (expr_filter.expr && ContainsProfiledLikeFunction(*expr_filter.expr)) {
-				scope_flags.like_operator = true;
+			if (expr_filter.expr) {
+				if (ContainsProfiledLikeFunction(*expr_filter.expr)) {
+					scope_flags.like_operator = true;
+				}
+				if (ContainsStringConstantComparisonExpression(*expr_filter.expr)) {
+					scope_flags.constant_comparison = true;
+				}
 			}
 		}
 		break;

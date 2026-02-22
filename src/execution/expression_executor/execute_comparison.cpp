@@ -1,13 +1,29 @@
 #include "duckdb/common/uhugeint.hpp"
+#include "duckdb/common/profiler.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/query_profiler.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace duckdb {
+
+namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
+
+static bool ShouldProfileStringComparison(const BoundComparisonExpression &expr) {
+	return expr.left->return_type.InternalType() == PhysicalType::VARCHAR ||
+	       expr.right->return_type.InternalType() == PhysicalType::VARCHAR;
+}
+
+} // namespace
 
 unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundComparisonExpression &expr,
                                                                 ExpressionExecutorState &root) {
@@ -21,6 +37,17 @@ unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundCompa
 
 void ExpressionExecutor::Execute(const BoundComparisonExpression &expr, ExpressionState *state,
                                  const SelectionVector *sel, idx_t count, Vector &result) {
+	const bool in_table_filter_scope = QueryProfiler::InTableFilterExpressionScope();
+	const bool should_profile_string_comparison = in_table_filter_scope && ShouldProfileStringComparison(expr);
+	const bool has_context = state && state->HasContext();
+	if (should_profile_string_comparison && !has_context) {
+		printf("[WARN] Table-scan string constant-comparison profiling skipped in ExpressionExecutor::Execute(comparison): missing ExpressionState context\n");
+	}
+	Profiler profiler;
+	if (should_profile_string_comparison && has_context) {
+		profiler.Start();
+	}
+
 	// resolve the children
 	state->intermediate_chunk.Reset();
 	auto &left = state->intermediate_chunk.data[0];
@@ -56,6 +83,10 @@ void ExpressionExecutor::Execute(const BoundComparisonExpression &expr, Expressi
 		break;
 	default:
 		throw InternalException("Unknown comparison type!");
+	}
+	if (should_profile_string_comparison && has_context) {
+		profiler.End();
+		QueryProfiler::Get(state->GetContext()).AddTableScanStringConstantComparisonMetrics(ElapsedNs(profiler));
 	}
 }
 

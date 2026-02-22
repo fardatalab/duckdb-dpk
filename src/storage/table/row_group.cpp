@@ -4,10 +4,16 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
+#include "duckdb/common/profiler.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/execution/adaptive_filter.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/query_profiler.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/optional_filter.hpp"
+#include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/metadata/metadata_reader.hpp"
@@ -24,6 +30,88 @@
 #include "duckdb/main/settings.hpp"
 
 namespace duckdb {
+
+namespace {
+
+static uint64_t ElapsedNs(const Profiler &profiler) {
+	return static_cast<uint64_t>(profiler.Elapsed() * 1000000000.0);
+}
+
+// Checks whether a filter subtree contains a VARCHAR IN predicate.
+static bool ContainsStringInPredicate(const TableFilter &filter) {
+	switch (filter.filter_type) {
+	case TableFilterType::IN_FILTER: {
+		auto &in_filter = filter.Cast<InFilter>();
+		return !in_filter.values.empty() && in_filter.values[0].type().InternalType() == PhysicalType::VARCHAR;
+	}
+	case TableFilterType::CONJUNCTION_AND: {
+		auto &conjunction_filter = filter.Cast<ConjunctionAndFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			if (ContainsStringInPredicate(*child_filter)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		auto &conjunction_filter = filter.Cast<ConjunctionOrFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			if (ContainsStringInPredicate(*child_filter)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::STRUCT_EXTRACT: {
+		auto &struct_filter = filter.Cast<StructFilter>();
+		return struct_filter.child_filter ? ContainsStringInPredicate(*struct_filter.child_filter) : false;
+	}
+	case TableFilterType::OPTIONAL_FILTER: {
+		auto &optional_filter = filter.Cast<OptionalFilter>();
+		return optional_filter.child_filter ? ContainsStringInPredicate(*optional_filter.child_filter) : false;
+	}
+	default:
+		return false;
+	}
+}
+
+// Checks whether a filter subtree contains an OPTIONAL_FILTER that wraps a
+// VARCHAR IN predicate. These are zonemap-pruning-only predicates that we want
+// to account for in table_scan_string_constant_comparison_time.
+static bool ContainsOptionalStringInPredicate(const TableFilter &filter) {
+	switch (filter.filter_type) {
+	case TableFilterType::OPTIONAL_FILTER: {
+		auto &optional_filter = filter.Cast<OptionalFilter>();
+		return optional_filter.child_filter ? ContainsStringInPredicate(*optional_filter.child_filter) : false;
+	}
+	case TableFilterType::CONJUNCTION_AND: {
+		auto &conjunction_filter = filter.Cast<ConjunctionAndFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			if (ContainsOptionalStringInPredicate(*child_filter)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::CONJUNCTION_OR: {
+		auto &conjunction_filter = filter.Cast<ConjunctionOrFilter>();
+		for (auto &child_filter : conjunction_filter.child_filters) {
+			if (ContainsOptionalStringInPredicate(*child_filter)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case TableFilterType::STRUCT_EXTRACT: {
+		auto &struct_filter = filter.Cast<StructFilter>();
+		return struct_filter.child_filter ? ContainsOptionalStringInPredicate(*struct_filter.child_filter) : false;
+	}
+	default:
+		return false;
+	}
+}
+
+} // namespace
 
 RowGroup::RowGroup(RowGroupCollection &collection_p, idx_t start, idx_t count)
     : SegmentBase<RowGroup>(start, count), collection(collection_p), version_info(nullptr), allocation_size(0),
@@ -439,7 +527,18 @@ bool RowGroup::CheckZonemap(ScanFilterInfo &filters) {
 		auto &filter = entry.filter;
 		auto base_column_index = entry.table_column_index;
 
+		const bool profile_optional_string_in =
+		    entry.filter_state && entry.filter_state->HasContext() && ContainsOptionalStringInPredicate(filter);
+		Profiler zonemap_profiler;
+		if (profile_optional_string_in) {
+			zonemap_profiler.Start();
+		}
 		auto prune_result = GetColumn(base_column_index).CheckZonemap(filter);
+		if (profile_optional_string_in) {
+			zonemap_profiler.End();
+			QueryProfiler::Get(entry.filter_state->GetContext())
+			    .AddTableScanStringConstantComparisonMetrics(ElapsedNs(zonemap_profiler));
+		}
 		if (prune_result == FilterPropagateResult::FILTER_ALWAYS_FALSE) {
 			return false;
 		}
@@ -466,7 +565,18 @@ bool RowGroup::CheckZonemapSegments(CollectionScanState &state) {
 		auto base_column_idx = entry.table_column_index;
 		auto &filter = entry.filter;
 
+		const bool profile_optional_string_in =
+		    entry.filter_state && entry.filter_state->HasContext() && ContainsOptionalStringInPredicate(filter);
+		Profiler zonemap_profiler;
+		if (profile_optional_string_in) {
+			zonemap_profiler.Start();
+		}
 		auto prune_result = GetColumn(base_column_idx).CheckZonemap(state.column_scans[column_idx], filter);
+		if (profile_optional_string_in) {
+			zonemap_profiler.End();
+			QueryProfiler::Get(entry.filter_state->GetContext())
+			    .AddTableScanStringConstantComparisonMetrics(ElapsedNs(zonemap_profiler));
+		}
 		if (prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE) {
 			continue;
 		}
