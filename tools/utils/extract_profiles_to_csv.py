@@ -14,6 +14,7 @@ Fields extracted (top-level JSON keys):
 - cumulative_optimizer_timing
 - query_parsing_optim_time
 - string_predicate_cpu_time
+- string_pred_wallclock_time
 - query_name
 - latency
 - rows_returned
@@ -68,7 +69,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any, Dict, Iterable, List, Optional
+import sys
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,10 @@ class ProfileRow:
     #
     # If direct fields are absent (older profiling JSONs), this value is None.
     string_predicate_cpu_time: Optional[float]
+    # Rough wallclock estimate for string predicate evaluation:
+    #   (like_time + const_cmp_time) / avg_concurrency
+    # where avg_concurrency is bytes-weighted using inferred predicate tables.
+    string_pred_wallclock_time: Optional[float]
     # Aggregate read-I/O time for the requested string predicate categories.
     # Computed from direct profiler fields:
     # - table_scan_string_constant_comparison_read_io_time
@@ -150,6 +156,7 @@ CSV_FIELDNAMES: List[str] = [
     "cumulative_optimizer_timing",
     "query_parsing_optim_time",
     "string_predicate_cpu_time",
+    "string_pred_wallclock_time",
     "string_predicate_read_io_time",
     "table_scan_string_constant_comparison_time",
     "table_scan_string_constant_comparison_count",
@@ -192,6 +199,41 @@ CSV_FIELDNAMES: List[str] = [
 
 
 _QUERY_ID_NUMERIC_RE = re.compile(r"(\d+)")
+_STRING_FUNC_COL_RE = re.compile(
+    r"(?i)\b(?:contains|prefix|suffix|starts_with|ends_with|regexp_matches|regexp_full_match)\s*\(\s*"
+    r"([a-z_][a-z0-9_]*)\b"
+)
+_STRING_LIKE_OP_COL_RE = re.compile(r"(?i)\b([a-z_][a-z0-9_]*)\b\s*(?:!~~\*?|~~\*?)\s*'[^']*'")
+_STRING_LIKE_KEYWORD_COL_RE = re.compile(
+    r"(?i)\b([a-z_][a-z0-9_]*)\b\s+(?:not\s+)?i?like\s*'[^']*'"
+)
+_STRING_COMPARE_COL_RE = re.compile(
+    r"(?i)\b([a-z_][a-z0-9_]*)\b\s*(?:=|!=|<>|<=|>=|<|>)\s*'[^']*'"
+    r"(?!\s*::\s*(?:date|time|timestamp|timestamptz|interval)\b)"
+)
+_STRING_IN_LIST_COL_RE = re.compile(
+    r"(?i)\b([a-z_][a-z0-9_]*)\b\s+(?:not\s+)?in\s*\(\s*'[^']*'(?:\s*,\s*'[^']*')*\s*\)"
+)
+_STRING_BETWEEN_COL_RE = re.compile(
+    r"(?i)\b([a-z_][a-z0-9_]*)\b\s+(?:not\s+)?between\s*'[^']*'\s+and\s*'[^']*'"
+)
+_STRING_SUBSTR_IN_COL_RE = re.compile(
+    r"(?i)(?:\"(?:substring|substr)\"|(?:substring|substr))\s*\(\s*\"?([a-z_][a-z0-9_]*)\"?[^)]*\)\s+"
+    r"(?:not\s+)?in\s*\(\s*'[^']*'"
+)
+_COLUMN_PREFIX_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*)_[A-Za-z0-9_]+\b")
+
+# TPCH column prefix hints (applied only if table metric keys match TPCH stems).
+_TPCH_PREFIX_TO_TABLE = {
+    "l": "lineitem",
+    "o": "orders",
+    "c": "customer",
+    "p": "part",
+    "ps": "partsupp",
+    "s": "supplier",
+    "n": "nation",
+    "r": "region",
+}
 
 
 def _normalize_query_name(query_name: Any) -> Optional[str]:
@@ -274,6 +316,218 @@ def _parse_table_metric_map(metric: Any) -> Dict[str, float]:
             continue
         parsed[table_name] = value
     return parsed
+
+
+def _table_stem(table_metric_key: str) -> str:
+    """Return normalized table stem from metric key (e.g., orders.parquet -> orders)."""
+    table_key = table_metric_key.strip().lower()
+    if table_key.endswith(".parquet"):
+        return table_key[: -len(".parquet")]
+    if "." in table_key:
+        return table_key.split(".", 1)[0]
+    return table_key
+
+
+def _iter_operator_nodes(node: Any) -> Iterable[Dict[str, Any]]:
+    """Depth-first traversal over operator nodes in a profiling tree."""
+    if not isinstance(node, dict):
+        return
+    yield node
+    children = node.get("children")
+    if not isinstance(children, list):
+        return
+    for child in children:
+        if isinstance(child, dict):
+            yield from _iter_operator_nodes(child)
+
+
+def _extract_string_predicate_prefixes(value: Any) -> Set[str]:
+    """Extract column prefixes from recognized string-predicate expressions."""
+    prefixes: Set[str] = set()
+    if value is None:
+        return prefixes
+
+    text = value if isinstance(value, str) else str(value)
+    if not text:
+        return prefixes
+
+    # These patterns capture the column identifier that participates in a
+    # string predicate. We intentionally avoid projection-derived hints to keep
+    # table inference tied to actual filter expressions.
+    for pattern in (
+        _STRING_FUNC_COL_RE,
+        _STRING_LIKE_OP_COL_RE,
+        _STRING_LIKE_KEYWORD_COL_RE,
+        _STRING_COMPARE_COL_RE,
+        _STRING_IN_LIST_COL_RE,
+        _STRING_BETWEEN_COL_RE,
+        _STRING_SUBSTR_IN_COL_RE,
+    ):
+        for match in pattern.finditer(text):
+            prefixes.update(_extract_column_prefixes(match.group(1)))
+
+    return prefixes
+
+
+def _value_contains_string_predicate(value: Any) -> bool:
+    """Check whether a filter value contains supported string-predicate forms."""
+    return bool(_extract_string_predicate_prefixes(value))
+
+
+def _extract_column_prefixes(value: Any) -> Set[str]:
+    """Extract column prefixes (e.g., o_orderkey -> o) from text/list values."""
+    prefixes: Set[str] = set()
+    if value is None:
+        return prefixes
+
+    values: List[str]
+    if isinstance(value, list):
+        values = [str(v) for v in value]
+    else:
+        values = [str(value)]
+
+    for item in values:
+        for match in _COLUMN_PREFIX_RE.finditer(item):
+            prefix = match.group(1).lower()
+            if prefix:
+                prefixes.add(prefix)
+    return prefixes
+
+
+def _resolve_prefix_to_tables(prefix: str, table_metric_keys: Set[str]) -> Set[str]:
+    """Resolve a column prefix to candidate table keys using TPCH+generic heuristics."""
+    candidates: Set[str] = set()
+    if not prefix:
+        return candidates
+
+    stem_to_key = {_table_stem(key): key for key in table_metric_keys}
+
+    # TPCH-aware mapping when available.
+    mapped_stem = _TPCH_PREFIX_TO_TABLE.get(prefix.lower())
+    if mapped_stem and mapped_stem in stem_to_key:
+        # Use explicit TPCH mapping as authoritative to avoid 'p' -> partsupp
+        # over-matching in generic startswith logic.
+        return {stem_to_key[mapped_stem]}
+
+    # Prefer exact stem matches before fuzzy prefix matching.
+    exact_match = stem_to_key.get(prefix.lower())
+    if exact_match:
+        return {exact_match}
+
+    # Generic startswith match for non-TPCH names.
+    for stem, key in stem_to_key.items():
+        if stem.startswith(prefix.lower()):
+            candidates.add(key)
+
+    # If unresolved, accept a unique first-letter match.
+    if not candidates and len(prefix) >= 1:
+        first_letter_matches = [key for stem, key in stem_to_key.items() if stem.startswith(prefix[0].lower())]
+        if len(first_letter_matches) == 1:
+            candidates.add(first_letter_matches[0])
+
+    return candidates
+
+
+def _infer_string_predicate_tables(profile: Dict[str, Any], table_metric_keys: Set[str]) -> Set[str]:
+    """Infer predicate-source tables by scanning READ_PARQUET operators with string filters."""
+    inferred_tables: Set[str] = set()
+    if not table_metric_keys:
+        return inferred_tables
+
+    roots = profile.get("children")
+    if not isinstance(roots, list):
+        return inferred_tables
+
+    for root in roots:
+        for node in _iter_operator_nodes(root):
+            operator_name = str(node.get("operator_name", "")).strip().upper()
+            if operator_name != "READ_PARQUET":
+                continue
+
+            extra_info = node.get("extra_info")
+            if not isinstance(extra_info, dict):
+                continue
+
+            filter_values: List[Any] = []
+            for key, value in extra_info.items():
+                if "filter" in str(key).lower():
+                    filter_values.append(value)
+            if not filter_values:
+                continue
+            if not any(_value_contains_string_predicate(value) for value in filter_values):
+                continue
+
+            prefixes: Set[str] = set()
+            for value in filter_values:
+                prefixes.update(_extract_string_predicate_prefixes(value))
+
+            resolved: Set[str] = set()
+            for prefix in prefixes:
+                resolved.update(_resolve_prefix_to_tables(prefix, table_metric_keys))
+
+            if resolved:
+                inferred_tables.update(resolved)
+            elif len(table_metric_keys) == 1:
+                # Defensive fallback for single-table scans with missing column hints.
+                inferred_tables.update(table_metric_keys)
+
+    return inferred_tables
+
+
+def _compute_weighted_avg_concurrency(
+    bytes_map: Dict[str, float], threads_map: Dict[str, float], selected_tables: Set[str]
+) -> Optional[float]:
+    """Compute bytes-weighted average concurrency for selected tables."""
+    weighted_threads = 0.0
+    total_bytes = 0.0
+    for table in selected_tables:
+        bytes_value = bytes_map.get(table)
+        if bytes_value is None or bytes_value <= 0:
+            continue
+
+        # Fall back to one thread when per-table thread count is missing/invalid.
+        thread_count = threads_map.get(table, 1.0)
+        if thread_count <= 0:
+            thread_count = 1.0
+
+        weighted_threads += bytes_value * thread_count
+        total_bytes += bytes_value
+
+    if total_bytes <= 0:
+        return None
+    return weighted_threads / total_bytes
+
+
+def _compute_string_pred_wallclock_time(
+    profile: Dict[str, Any], query_id: str, string_predicate_cpu_time: Optional[float]
+) -> Optional[float]:
+    """Estimate string predicate wallclock time using inferred table concurrency."""
+    if string_predicate_cpu_time is None:
+        return None
+    if string_predicate_cpu_time <= 0:
+        return 0.0
+
+    bytes_map = _parse_table_metric_map(profile.get("pread2_per_table_bytes"))
+    threads_map = _parse_table_metric_map(profile.get("pread2_per_table_threads"))
+    if not bytes_map:
+        return None
+
+    table_keys = set(bytes_map.keys())
+    predicate_tables = _infer_string_predicate_tables(profile, table_keys)
+
+    # Fallback to all scanned tables when predicate-source inference is ambiguous.
+    selected_tables = predicate_tables if predicate_tables else table_keys
+    if not predicate_tables:
+        print(
+            f"[WARN] query={query_id}: could not infer string predicate source tables from plan; "
+            "falling back to all tables in pread2_per_table_* metrics",
+            file=sys.stderr,
+        )
+    avg_concurrency = _compute_weighted_avg_concurrency(bytes_map, threads_map, selected_tables)
+    if avg_concurrency is None or avg_concurrency <= 0:
+        return None
+
+    return string_predicate_cpu_time / avg_concurrency
 
 
 def _compute_pread2_throughput_mb_s(profile: Dict[str, Any]) -> Optional[float]:
@@ -365,6 +619,7 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
     else:
         query_parsing_optim_time = None
 
+    string_pred_wallclock_time = _compute_string_pred_wallclock_time(profile, query_id, string_predicate_cpu_time)
     pread2_throughput_mb_s = _compute_pread2_throughput_mb_s(profile)
 
     return ProfileRow(
@@ -373,6 +628,7 @@ def extract_row(profile: Dict[str, Any], query_id: str) -> ProfileRow:
         cumulative_optimizer_timing=_coerce_float(profile.get("cumulative_optimizer_timing")),
         query_parsing_optim_time=query_parsing_optim_time,
         string_predicate_cpu_time=string_predicate_cpu_time,
+        string_pred_wallclock_time=string_pred_wallclock_time,
         string_predicate_read_io_time=string_predicate_read_io_time,
         table_scan_string_constant_comparison_time=table_scan_string_constant_comparison_time,
         table_scan_string_constant_comparison_count=table_scan_string_constant_comparison_count,
@@ -452,6 +708,7 @@ def write_csv(rows: Iterable[ProfileRow], output_csv: Path) -> None:
                     "cumulative_optimizer_timing": row.cumulative_optimizer_timing,
                     "query_parsing_optim_time": row.query_parsing_optim_time,
                     "string_predicate_cpu_time": row.string_predicate_cpu_time,
+                    "string_pred_wallclock_time": row.string_pred_wallclock_time,
                     "string_predicate_read_io_time": row.string_predicate_read_io_time,
                     "table_scan_string_constant_comparison_time": row.table_scan_string_constant_comparison_time,
                     "table_scan_string_constant_comparison_count": row.table_scan_string_constant_comparison_count,
