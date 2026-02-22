@@ -4,6 +4,8 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <cerrno>
 #include <cstdint>
@@ -35,12 +37,14 @@ struct ServerConfig {
 	uint16_t port;
 	std::string db_path;
 	std::string metrics_file;
+	std::string profile_output_dir;
 	int threads;
 	std::string key_name;
 	std::string key_value;
 
 	ServerConfig()
-	    : bind_ip("0.0.0.0"), port(7500), db_path("tpch_metadata.db"), metrics_file("server_metrics.csv"), threads(16) {
+	    : bind_ip("0.0.0.0"), port(7500), db_path("tpch_metadata.db"), metrics_file("server_metrics.csv"),
+	      profile_output_dir("tpch_profiles_rdma"), threads(16) {
 	}
 };
 
@@ -110,6 +114,7 @@ void PrintUsage(const char *prog) {
 	          << "  --port <port>             default: 7500\n"
 	          << "  --db-path <duckdb-file>   default: tpch_metadata.db\n"
 	          << "  --metrics-file <csv>      default: server_metrics.csv\n"
+	          << "  --profile-dir <dir>       default: tpch_profiles_rdma\n"
 	          << "  --threads <n>             default: 16\n"
 	          << "  --key-name <name>         optional parquet key name\n"
 	          << "  --key-value <value>       optional parquet key value\n";
@@ -156,6 +161,12 @@ bool ParseArgs(int argc, char **argv, ServerConfig &config, std::string &error) 
 				return false;
 			}
 			config.metrics_file = v;
+		} else if (arg == "--profile-dir") {
+			const char *v = require_value(arg);
+			if (!v) {
+				return false;
+			}
+			config.profile_output_dir = v;
 		} else if (arg == "--threads") {
 			const char *v = require_value(arg);
 			if (!v) {
@@ -190,6 +201,23 @@ bool ParseArgs(int argc, char **argv, ServerConfig &config, std::string &error) 
 		return false;
 	}
 	return true;
+}
+
+/**
+ * Ensure a directory path exists for profile output files.
+ */
+bool EnsureDirectoryExists(const std::string &path, std::string &error) {
+	if (path.empty()) {
+		return true;
+	}
+	if (mkdir(path.c_str(), 0755) == 0) {
+		return true;
+	}
+	if (errno == EEXIST) {
+		return true;
+	}
+	error = rdma_query::ErrnoMessage("mkdir failed for " + path);
+	return false;
 }
 
 /**
@@ -280,6 +308,68 @@ bool ConfigureDuckDB(const ServerConfig &config, Connection &con, std::string &e
 }
 
 /**
+ * Escape single quotes for safe SQL literal injection in `SET profiling_output`.
+ */
+std::string EscapeSqlLiteral(const std::string &input) {
+	std::string escaped;
+	escaped.reserve(input.size() + 8);
+	for (size_t i = 0; i < input.size(); i++) {
+		const char c = input[i];
+		if (c == '\'') {
+			escaped.push_back('\'');
+			escaped.push_back('\'');
+		} else {
+			escaped.push_back(c);
+		}
+	}
+	return escaped;
+}
+
+/**
+ * Build per-query profiling output file path.
+ */
+std::string BuildProfileFilePath(const ServerConfig &config, uint32_t query_id) {
+	std::ostringstream ss;
+	ss << config.profile_output_dir << "/query" << query_id << ".json";
+	return ss.str();
+}
+
+/**
+ * Configure profiling just before running one query, mirroring run_tpch.sh behavior.
+ */
+bool ConfigureProfilingForQuery(const ServerConfig &config, Connection &con, uint32_t query_id,
+                                std::string &profile_output_path, std::string &error) {
+	if (config.profile_output_dir.empty()) {
+		profile_output_path.clear();
+		return true;
+	}
+
+	profile_output_path = BuildProfileFilePath(config, query_id);
+	const std::string escaped_path = EscapeSqlLiteral(profile_output_path);
+
+	std::ostringstream set_output_sql;
+	set_output_sql << "SET profiling_output = '" << escaped_path << "'";
+	auto set_output_result = con.Query(set_output_sql.str());
+	if (!set_output_result || set_output_result->HasError()) {
+		error = set_output_result ? set_output_result->GetError() : "failed to set profiling_output";
+		return false;
+	}
+
+	auto set_mode_result = con.Query("SET profiling_mode = 'detailed'");
+	if (!set_mode_result || set_mode_result->HasError()) {
+		error = set_mode_result ? set_mode_result->GetError() : "failed to set profiling_mode";
+		return false;
+	}
+
+	auto set_enable_result = con.Query("SET enable_profiling = 'json'");
+	if (!set_enable_result || set_enable_result->HasError()) {
+		error = set_enable_result ? set_enable_result->GetError() : "failed to enable json profiling";
+		return false;
+	}
+	return true;
+}
+
+/**
  * Execute one SQL text on DuckDB and return either result text or error text.
  */
 void ExecuteQueryToText(Connection &con, const std::string &sql, std::string &out_text, bool &ok, std::string &error_text,
@@ -324,6 +414,10 @@ int main(int argc, char **argv) {
 	Connection con(db);
 	if (!ConfigureDuckDB(config, con, error)) {
 		std::cerr << "[server] DuckDB setup failed: " << error << "\n";
+		return 1;
+	}
+	if (!EnsureDirectoryExists(config.profile_output_dir, error)) {
+		std::cerr << "[server] profile directory setup failed: " << error << "\n";
 		return 1;
 	}
 
@@ -434,6 +528,24 @@ int main(int argc, char **argv) {
 
 		std::cerr << "[server] query_id=" << query_id << " bytes=" << query_payload.size() << " received\n";
 
+		std::string profile_output_path;
+		if (!ConfigureProfilingForQuery(config, con, query_id, profile_output_path, error)) {
+			const std::string profiling_error = "profiling setup failed: " + error;
+			uint64_t send_ns = 0;
+			std::string send_error;
+			if (!endpoint.SendMessage(MessageType::ERROR_TEXT, query_id, profiling_error.data(), profiling_error.size(),
+			                          send_ns, send_error)) {
+				std::cerr << "[server] SendMessage failed while returning profiling error for query_id=" << query_id
+				          << ": " << send_error << "\n";
+				metrics.LogRow(NowNanos(), query_id, query_payload.size(), 0, profiling_error.size(), send_ns,
+				               "transport_error", send_error);
+				break;
+			}
+			metrics.LogRow(NowNanos(), query_id, query_payload.size(), 0, profiling_error.size(), send_ns,
+			               "profiling_error", profiling_error);
+			continue;
+		}
+
 		std::string result_payload;
 		bool query_ok = false;
 		std::string query_error;
@@ -455,7 +567,8 @@ int main(int argc, char **argv) {
 		metrics.LogRow(NowNanos(), query_id, query_payload.size(), execute_ns, result_payload.size(), result_send_ns,
 		               status, query_error);
 		std::cerr << "[server] query_id=" << query_id << " status=" << status << " execute_ns=" << execute_ns
-		          << " result_send_ns=" << result_send_ns << " result_bytes=" << result_payload.size() << "\n";
+		          << " result_send_ns=" << result_send_ns << " result_bytes=" << result_payload.size()
+		          << " profile_file=" << (profile_output_path.empty() ? "none" : profile_output_path) << "\n";
 	}
 
 	if (client_id) {

@@ -70,7 +70,7 @@ public:
 		if (!out_.is_open()) {
 			throw std::runtime_error("failed to open client metrics file: " + path);
 		}
-		out_ << "timestamp_ns,query_id,query_bytes,query_send_ns,response_bytes,response_type,status,error\n";
+		out_ << "timestamp_ns,query_id,query_bytes,query_send_ns,e2e_wall_ns,response_bytes,response_type,status,error\n";
 		out_.flush();
 	}
 
@@ -78,11 +78,11 @@ public:
 	 * Append one client metrics row and flush immediately.
 	 */
 	void LogRow(uint64_t timestamp_ns, uint32_t query_id, size_t query_bytes, uint64_t query_send_ns,
-	            size_t response_bytes, const std::string &response_type, const std::string &status,
-	            const std::string &error) {
-		out_ << timestamp_ns << ',' << query_id << ',' << query_bytes << ',' << query_send_ns << ',' << response_bytes
-		     << ',' << EscapeForCsv(response_type) << ',' << EscapeForCsv(status) << ',' << EscapeForCsv(error)
-		     << '\n';
+	            uint64_t e2e_wall_ns, size_t response_bytes, const std::string &response_type,
+	            const std::string &status, const std::string &error) {
+		out_ << timestamp_ns << ',' << query_id << ',' << query_bytes << ',' << query_send_ns << ',' << e2e_wall_ns
+		     << ',' << response_bytes << ',' << EscapeForCsv(response_type) << ',' << EscapeForCsv(status) << ','
+		     << EscapeForCsv(error) << '\n';
 		out_.flush();
 	}
 
@@ -470,14 +470,18 @@ int main(int argc, char **argv) {
 		std::string sql;
 		if (!ReadFileToString(q.path, sql, error)) {
 			std::cerr << "[client] failed to read query file for query_id=" << q.query_id << ": " << error << "\n";
-			metrics.LogRow(NowNanos(), q.query_id, 0, 0, 0, "none", "input_error", error);
+			metrics.LogRow(NowNanos(), q.query_id, 0, 0, 0, 0, "none", "input_error", error);
 			continue;
 		}
 
+		// End-to-end wall clock starts before the first query SEND posting.
+		const uint64_t e2e_start_ns = NowNanos();
 		uint64_t query_send_ns = 0;
 		if (!endpoint.SendMessage(MessageType::QUERY_TEXT, q.query_id, sql.data(), sql.size(), query_send_ns, error)) {
+			const uint64_t e2e_wall_ns = NowNanos() - e2e_start_ns;
 			std::cerr << "[client] failed sending query_id=" << q.query_id << ": " << error << "\n";
-			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, 0, "none", "transport_error", error);
+			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, e2e_wall_ns, 0, "none", "transport_error",
+			               error);
 			break;
 		}
 
@@ -485,17 +489,20 @@ int main(int argc, char **argv) {
 		uint32_t response_query_id = 0;
 		std::string response_payload;
 		if (!endpoint.ReceiveMessage(response_type, response_query_id, response_payload, error)) {
+			const uint64_t e2e_wall_ns = NowNanos() - e2e_start_ns;
 			std::cerr << "[client] failed receiving response for query_id=" << q.query_id << ": " << error << "\n";
-			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, 0, "none", "transport_error", error);
+			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, e2e_wall_ns, 0, "none", "transport_error",
+			               error);
 			break;
 		}
+		const uint64_t e2e_wall_ns = NowNanos() - e2e_start_ns;
 
 		if (response_query_id != q.query_id) {
 			std::ostringstream mismatch;
 			mismatch << "response query_id mismatch, expected=" << q.query_id << " actual=" << response_query_id;
 			std::cerr << "[client] " << mismatch.str() << "\n";
-			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, response_payload.size(), "mismatch",
-			               "protocol_error", mismatch.str());
+			metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, e2e_wall_ns, response_payload.size(),
+			               "mismatch", "protocol_error", mismatch.str());
 			break;
 		}
 
@@ -523,10 +530,10 @@ int main(int argc, char **argv) {
 			}
 		}
 
-		metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, response_payload.size(), response_type_text,
-		               status, row_error);
+		metrics.LogRow(NowNanos(), q.query_id, sql.size(), query_send_ns, e2e_wall_ns, response_payload.size(),
+		               response_type_text, status, row_error);
 		std::cerr << "[client] query_id=" << q.query_id << " status=" << status << " query_send_ns=" << query_send_ns
-		          << " response_bytes=" << response_payload.size() << "\n";
+		          << " e2e_wall_ns=" << e2e_wall_ns << " response_bytes=" << response_payload.size() << "\n";
 	}
 
 	uint64_t shutdown_send_ns = 0;
