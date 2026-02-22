@@ -376,14 +376,15 @@ void ExecuteQueryToText(Connection &con, const std::string &sql, std::string &ou
                         uint64_t &execute_ns) {
 	const uint64_t exec_start_ns = NowNanos();
 	std::unique_ptr<MaterializedQueryResult> result = con.Query(sql);
-	execute_ns = NowNanos() - exec_start_ns;
 	if (!result) {
+		execute_ns = NowNanos() - exec_start_ns;
 		ok = false;
 		error_text = "duckdb returned null result pointer";
 		out_text = error_text;
 		return;
 	}
 	if (result->HasError()) {
+		execute_ns = NowNanos() - exec_start_ns;
 		ok = false;
 		error_text = result->GetError();
 		out_text = error_text;
@@ -392,6 +393,8 @@ void ExecuteQueryToText(Connection &con, const std::string &sql, std::string &ou
 	ok = true;
 	error_text.clear();
 	out_text = result->ToString();
+	// execute_ns intentionally includes Query + ToString, not just Query.
+	execute_ns = NowNanos() - exec_start_ns;
 }
 
 } // namespace
@@ -528,8 +531,11 @@ int main(int argc, char **argv) {
 
 		std::cerr << "[server] query_id=" << query_id << " bytes=" << query_payload.size() << " received\n";
 
+		uint64_t profiling_setup_ns = 0;
+		const uint64_t profiling_setup_start_ns = NowNanos();
 		std::string profile_output_path;
 		if (!ConfigureProfilingForQuery(config, con, query_id, profile_output_path, error)) {
+			profiling_setup_ns = NowNanos() - profiling_setup_start_ns;
 			const std::string profiling_error = "profiling setup failed: " + error;
 			uint64_t send_ns = 0;
 			std::string send_error;
@@ -537,20 +543,24 @@ int main(int argc, char **argv) {
 			                          send_ns, send_error)) {
 				std::cerr << "[server] SendMessage failed while returning profiling error for query_id=" << query_id
 				          << ": " << send_error << "\n";
-				metrics.LogRow(NowNanos(), query_id, query_payload.size(), 0, profiling_error.size(), send_ns,
+				metrics.LogRow(NowNanos(), query_id, query_payload.size(), profiling_setup_ns, profiling_error.size(), send_ns,
 				               "transport_error", send_error);
 				break;
 			}
-			metrics.LogRow(NowNanos(), query_id, query_payload.size(), 0, profiling_error.size(), send_ns,
+			metrics.LogRow(NowNanos(), query_id, query_payload.size(), profiling_setup_ns, profiling_error.size(), send_ns,
 			               "profiling_error", profiling_error);
 			continue;
 		}
+		profiling_setup_ns = NowNanos() - profiling_setup_start_ns;
 
 		std::string result_payload;
 		bool query_ok = false;
 		std::string query_error;
-		uint64_t execute_ns = 0;
-		ExecuteQueryToText(con, query_payload, result_payload, query_ok, query_error, execute_ns);
+		uint64_t query_and_stringify_ns = 0;
+		ExecuteQueryToText(con, query_payload, result_payload, query_ok, query_error, query_and_stringify_ns);
+		// execute_ns now matches the requested accounting contract:
+		// profiling setup + query execution + ToString materialization.
+		const uint64_t execute_ns = profiling_setup_ns + query_and_stringify_ns;
 
 		const MessageType response_type = query_ok ? MessageType::RESULT_TEXT : MessageType::ERROR_TEXT;
 		uint64_t result_send_ns = 0;

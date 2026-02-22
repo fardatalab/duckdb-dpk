@@ -6,7 +6,6 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
-#include <thread>
 
 #include <infiniband/verbs.h>
 
@@ -232,7 +231,7 @@ bool RdmaEndpoint::WaitSendCompletion(std::string &error) {
 			return false;
 		}
 		if (polled == 0) {
-			std::this_thread::yield();
+			// Busy-poll for lowest latency; do not yield to scheduler.
 			continue;
 		}
 		if (wc.status != IBV_WC_SUCCESS) {
@@ -260,7 +259,7 @@ bool RdmaEndpoint::WaitRecvCompletion(ibv_wc &wc, std::string &error) {
 			return false;
 		}
 		if (polled == 0) {
-			std::this_thread::yield();
+			// Busy-poll for lowest latency; do not yield to scheduler.
 			continue;
 		}
 		if (wc.status != IBV_WC_SUCCESS) {
@@ -454,4 +453,3 @@ size_t RdmaEndpoint::MaxFramePayloadBytes() const {
 }
 
 } // namespace rdma_query
-
